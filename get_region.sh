@@ -84,6 +84,7 @@ if (( EUID != 0 )); then
 fi
 
 mkdir -p /opt/piavpn-manual
+chmod 700 /opt/piavpn-manual
 # Erase old latencyList file
 rm -f /opt/piavpn-manual/latencyList
 touch /opt/piavpn-manual/latencyList

@@ -130,6 +130,7 @@ splitToken="dedicated_ip_$DIP_TOKEN"
 # Create a credentials file with the login token
 echo -n "Trying to write /opt/piavpn-manual/pia.ovpn..."
 mkdir -p /opt/piavpn-manual
+chmod 700 /opt/piavpn-manual
 rm -f /opt/piavpn-manual/credentials /opt/piavpn-manual/route_info
 
 if [[ -z $DIP_TOKEN ]]; then

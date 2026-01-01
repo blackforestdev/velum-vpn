@@ -65,6 +65,7 @@ if (( EUID != 0 )); then
 fi
 
 mkdir -p /opt/piavpn-manual
+chmod 700 /opt/piavpn-manual
 
 if [[ -z $PIA_USER || -z $PIA_PASS ]]; then
   echo "If you want this script to automatically get a token from the Meta"
@@ -96,6 +97,7 @@ tokenLocation=/opt/piavpn-manual/token
 echo -e "Token retrieved successfully.${nc}"
 echo "$token" > "$tokenLocation" || exit 1
 echo "$tokenExpiration" >> "$tokenLocation"
+chmod 600 "$tokenLocation"
 echo
 echo "This token will expire in 24 hours, on $tokenExpiration."
 echo

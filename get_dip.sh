@@ -54,6 +54,7 @@ if (( EUID != 0 )); then
 fi
 
 mkdir -p /opt/piavpn-manual
+chmod 700 /opt/piavpn-manual
 
 if [[ -z $PIA_TOKEN ]]; then
   echo "If you want this script to automatically retrieve dedicated IP location details"
@@ -107,3 +108,4 @@ echo $dipHostname >> /opt/piavpn-manual/dipAddress
 echo $keyHostname >> /opt/piavpn-manual/dipAddress
 echo $dipExpiration >> /opt/piavpn-manual/dipAddress
 echo $pfCapable >> /opt/piavpn-manual/dipAddress
+chmod 600 /opt/piavpn-manual/dipAddress
