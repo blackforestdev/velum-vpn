@@ -19,6 +19,12 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 
+# SECURITY: Dead-man switch - refuse to run if insecure curl flags detected
+if grep -qE 'curl[^|]*(-k|--insecure)' "$0"; then
+  echo "SECURITY VIOLATION: Insecure curl flag detected in script. Refusing to run."
+  exit 1
+fi
+
 # This function allows you to check if the required tools have been installed.
 check_tool() {
   cmd=$1

@@ -19,6 +19,12 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 
+# SECURITY: Dead-man switch - refuse to run if insecure curl flags detected
+if grep -qE 'curl[^|]*(-k|--insecure)' "$0"; then
+  echo "SECURITY VIOLATION: Insecure curl flag detected in script. Refusing to run."
+  exit 1
+fi
+
 # This function allows you to check if the required tools have been installed.
 check_tool() {
   cmd=$1
@@ -164,6 +170,7 @@ if [[ $PIA_DNS == "true" ]]; then
 fi
 echo -n "Trying to write ${PIA_CONF_PATH}..."
 mkdir -p "$(dirname "$PIA_CONF_PATH")"
+chmod 700 "$(dirname "$PIA_CONF_PATH")"
 # Create config file with restrictive permissions (private key inside)
 umask 077
 # Build PostUp command for DNS route fix (macOS only)

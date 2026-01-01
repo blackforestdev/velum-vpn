@@ -50,7 +50,17 @@ rm -f /opt/piavpn-manual/token /opt/piavpn-manual/latencyList /opt/piavpn-manual
 # Format: two lines - username on first line, password on second
 # Use SUDO_USER's home if running via sudo, otherwise current user's home
 if [[ -n $SUDO_USER ]]; then
-  PIA_CREDS_FILE="$(eval echo ~$SUDO_USER)/.pia_credentials"
+  # Avoid eval - get home directory safely
+  if [[ "$(uname)" == "Darwin" ]]; then
+    SUDO_USER_HOME=$(dscl . -read /Users/"$SUDO_USER" NFSHomeDirectory 2>/dev/null | awk '{print $2}')
+  else
+    SUDO_USER_HOME=$(getent passwd "$SUDO_USER" 2>/dev/null | cut -d: -f6)
+  fi
+  # Fallback if lookup failed
+  if [[ -z "$SUDO_USER_HOME" ]]; then
+    SUDO_USER_HOME="/home/$SUDO_USER"
+  fi
+  PIA_CREDS_FILE="$SUDO_USER_HOME/.pia_credentials"
 else
   PIA_CREDS_FILE="$HOME/.pia_credentials"
 fi
@@ -98,6 +108,11 @@ while :; do
       fi
       PIA_USER=""
     done
+  # SECURITY NOTE: Environment variables can be read via /proc/$PID/environ
+  # by the same user on Linux. This is accepted as the standard approach for
+  # shell scripts - alternatives (stdin piping, file descriptors) require
+  # significant rewrites. Command-line args would be worse (visible in ps aux).
+  # Future velum-vpn versions should consider more secure credential passing.
   export PIA_USER
 
   while :; do

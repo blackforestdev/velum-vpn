@@ -88,6 +88,7 @@ chmod 700 /opt/piavpn-manual
 # Erase old latencyList file
 rm -f /opt/piavpn-manual/latencyList
 touch /opt/piavpn-manual/latencyList
+chmod 600 /opt/piavpn-manual/latencyList
 
 # This allows you to set the maximum allowed latency in seconds.
 # All servers that respond slower than this will be ignored.
@@ -137,9 +138,34 @@ if [[ -f "$regionDataCache" && "$VPN_PROTOCOL" != "no" ]]; then
   # Reuse cached data for connection (ensures we connect to the displayed server)
   all_region_data=$(cat "$regionDataCache")
 else
-  # Fetch fresh data and cache it
+  # SECURITY NOTE: Server list is fetched over HTTPS but has no cryptographic
+  # signature verification. A compromised DNS or MITM attack (with forged cert)
+  # could theoretically serve a malicious server list.
+  #
+  # RECOMMENDATION TO PIA: Implement signed server lists with public key
+  # verification. Contact PIA to request this security enhancement.
+  # See: https://github.com/pia-foss/manual-connections/issues
+  #
+  # Basic sanity validation is performed below as a partial mitigation.
   all_region_data=$(curl -s "$serverlist_url" | head -1)
+
+  # Validate server list response
+  if [[ -z "$all_region_data" ]]; then
+    echo -e "${red}ERROR: Empty response from server list API.${nc}"
+    exit 1
+  fi
+  if ! echo "$all_region_data" | jq -e '.regions' >/dev/null 2>&1; then
+    echo -e "${red}ERROR: Invalid server list format - missing regions array.${nc}"
+    exit 1
+  fi
+  region_count=$(echo "$all_region_data" | jq '.regions | length')
+  if [[ "$region_count" -lt 10 ]]; then
+    echo -e "${red}ERROR: Suspicious server list - only $region_count regions (expected 50+).${nc}"
+    exit 1
+  fi
+
   echo "$all_region_data" > "$regionDataCache"
+  chmod 600 "$regionDataCache"
 fi
 
 # Set the region the user has specified

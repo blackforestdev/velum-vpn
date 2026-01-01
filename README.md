@@ -49,13 +49,21 @@ Tests performed:
 
 ### Credential File
 
-Store credentials securely (avoids shell history exposure):
+Create credentials file (two lines: username, then password):
 
+**Option 1 - Text editor (most secure):**
 ```bash
-echo "p1234567" > ~/.pia_credentials
-echo "your_password" >> ~/.pia_credentials
+nano ~/.pia_credentials
+# Enter username on line 1, password on line 2, save and exit
 chmod 600 ~/.pia_credentials
 ```
+
+**Option 2 - Secure prompt (password hidden):**
+```bash
+read -p "Username: " user && read -sp "Password: " pass && printf "%s\n%s\n" "$user" "$pass" > ~/.pia_credentials && chmod 600 ~/.pia_credentials && unset user pass
+```
+
+**Warning:** Avoid using `echo` with passwords - they appear in shell history.
 
 ### Environment Variables
 
