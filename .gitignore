@@ -1,13 +1,39 @@
 # Credentials and secrets
 .pia_credentials
 *.credentials
+*.secret
+token
 pia_gen_wg.sh
+
+# Private keys (NOT public certs like ca.rsa.4096.crt)
+*.key
+*.pem
+!ca.rsa.4096.crt
+
+# WireGuard configs (contain private keys)
+*.conf
+!/openvpn_config/*.ovpn
+
+# Environment files
+.env
+.env.*
 
 # macOS
 .DS_Store
+._*
+
+# Linux
+*~
+*.swp
+*.swo
 
 # Claude Code
 .claude/
 
-# Runtime files
+# Runtime files (created during operation)
 /opt/piavpn-manual/
+
+# Backup files
+*.bak
+*.backup
+*.orig

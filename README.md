@@ -1,10 +1,15 @@
 # velum-vpn
 
-A hardened fork of [PIA manual-connections](https://github.com/pia-foss/manual-connections) focused on macOS reliability, security, and usability.
+A hardened fork of [PIA manual-connections](https://github.com/pia-foss/manual-connections) with improved reliability, security, and usability.
+
+## Supported Platforms
+
+- **macOS** (tested)
+- **Linux/Debian** (in progress)
 
 ## What's Different
 
-This fork addresses several issues with the upstream scripts when running on macOS:
+This fork addresses several issues with the upstream scripts:
 
 | Issue | Fix |
 |-------|-----|
@@ -13,41 +18,16 @@ This fork addresses several issues with the upstream scripts when running on mac
 | Geolocated servers (privacy concern) | Optional geo server filter |
 | Credentials in command history | Credential file support |
 | No connection validation | `pia-test` validator |
-| Complex CLI workflow | `pia` wrapper script |
 
 ## Quick Start
 
 ```bash
-# Clone and enter directory
-git clone https://github.com/YOUR_USERNAME/velum-vpn.git
+git clone git@github.com:blackforestdev/velum-vpn.git
 cd velum-vpn
-
-# Option 1: Use the wrapper (recommended)
-./pia connect
-
-# Option 2: Use the original setup script
 sudo ./run_setup.sh
 ```
 
 ## Tools
-
-### `pia` - Wrapper Script
-
-Simplified interface with credential management:
-
-```bash
-pia connect              # Auto-select fastest server with port forwarding
-pia connect panama       # Connect to specific region
-pia connect --no-pf      # Connect without port forwarding requirement
-pia disconnect           # Clean disconnect
-pia status               # Show connection details
-pia regions              # List available regions
-```
-
-**Credential sources** (checked in order):
-1. Environment variables: `PIA_USER`, `PIA_PASS`
-2. Bitwarden CLI: set `PIA_BW_ITEM="item name"`
-3. Interactive prompt
 
 ### `pia-test` - Connection Validator
 
@@ -72,7 +52,6 @@ Tests performed:
 Store credentials securely (avoids shell history exposure):
 
 ```bash
-# Create credential file
 echo "p1234567" > ~/.pia_credentials
 echo "your_password" >> ~/.pia_credentials
 chmod 600 ~/.pia_credentials
@@ -100,23 +79,34 @@ sudo PIA_USER=p1234567 PIA_PASS=xxx VPN_PROTOCOL=wireguard PIA_PF=true ./run_set
 
 ## Dependencies
 
-```bash
-# macOS (Homebrew)
-brew install wireguard-tools curl jq
+### macOS
 
-# Optional: Bitwarden CLI for credential management
-brew install bitwarden-cli
+```bash
+brew install wireguard-tools curl jq
 ```
 
-## macOS-Specific Notes
+### Debian/Ubuntu
+
+```bash
+sudo apt install wireguard-tools curl jq
+```
+
+## Platform Notes
 
 ### IPv6
 
 Disable IPv6 to prevent leaks:
 
+**macOS:**
 ```bash
 networksetup -setv6off "Wi-Fi"
 networksetup -setv6off "Ethernet"
+```
+
+**Linux:**
+```bash
+sudo sysctl -w net.ipv6.conf.all.disable_ipv6=1
+sudo sysctl -w net.ipv6.conf.default.disable_ipv6=1
 ```
 
 ### DNS Routing
@@ -126,10 +116,6 @@ If your local network uses 10.0.0.0/24, PIA's DNS (10.0.0.243) may route locally
 ### Disconnect
 
 ```bash
-# Using wrapper
-pia disconnect
-
-# Or manually
 sudo wg-quick down pia
 pkill -f port_forwarding.sh
 ```
@@ -141,11 +127,10 @@ Some PIA servers are "geolocated" - physically located in a different country th
 To exclude geolocated servers:
 
 ```bash
-# Via environment variable
 ALLOW_GEO_SERVERS=false sudo ./run_setup.sh
-
-# The setup script will also prompt you
 ```
+
+The setup script will also prompt you.
 
 ## Port Forwarding
 
@@ -157,9 +142,8 @@ Port forwarding is enabled by default (`PIA_PF=true`). The forwarded port is dis
 
 | Script | Purpose |
 |--------|---------|
-| `pia` | Wrapper with credential management |
-| `pia-test` | Connection security validator |
 | `run_setup.sh` | Interactive setup (prompts for options) |
+| `pia-test` | Connection security validator |
 | `get_region.sh` | Server selection and latency testing |
 | `get_token.sh` | Authentication token retrieval |
 | `connect_to_wireguard_with_token.sh` | WireGuard connection |
