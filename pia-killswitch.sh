@@ -120,8 +120,11 @@ generate_pf_rules() {
 # VPN Interface: $vpn_iface
 # LAN Policy: $lan_policy
 
-# Default: block all traffic
+# Default: block all traffic (IPv4)
 block all
+
+# Block ALL IPv6 traffic (prevents leaks)
+block quick inet6 all
 
 # Allow loopback
 pass quick on lo0 all
@@ -236,6 +239,7 @@ enable_killswitch() {
   echo "${GREEN}Kill switch enabled!${NC}"
   echo ""
   echo "Traffic is now blocked unless it goes through the VPN."
+  echo "IPv6 is blocked at the firewall level."
   echo "Run 'sudo $0 status' to verify."
 }
 

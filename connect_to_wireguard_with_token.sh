@@ -82,6 +82,35 @@ then
   echo -e "sysctl -w net.ipv6.conf.default.disable_ipv6=1${nc}"
 fi
 
+# SECURITY: Warn about token expiry
+# Token file format: line 1 = token, line 2 = expiry timestamp
+token_file="/opt/piavpn-manual/token"
+if [[ -f "$token_file" ]]; then
+  token_expiry=$(sed -n '2p' "$token_file" 2>/dev/null)
+  if [[ -n "$token_expiry" ]]; then
+    # Parse expiry date and compare to now
+    if [[ "$(uname)" == "Darwin" ]]; then
+      expiry_epoch=$(date -jf "%a %b %d %T %Z %Y" "$token_expiry" "+%s" 2>/dev/null || echo 0)
+    else
+      expiry_epoch=$(date -d "$token_expiry" "+%s" 2>/dev/null || echo 0)
+    fi
+    now_epoch=$(date "+%s")
+    if [[ "$expiry_epoch" -gt 0 && "$now_epoch" -gt "$expiry_epoch" ]]; then
+      echo -e "${red}WARNING: Authentication token has expired!${nc}"
+      echo -e "${red}Token expired: $token_expiry${nc}"
+      echo -e "${red}Please re-run ./run_setup.sh to get a new token.${nc}"
+      exit 1
+    elif [[ "$expiry_epoch" -gt 0 ]]; then
+      hours_left=$(( (expiry_epoch - now_epoch) / 3600 ))
+      if [[ "$hours_left" -lt 2 ]]; then
+        echo -e "${red}WARNING: Token expires in less than 2 hours!${nc}"
+        echo "Consider running ./run_setup.sh soon to refresh."
+        echo
+      fi
+    fi
+  fi
+fi
+
 # Check if the mandatory environment variables are set.
 if [[ -z $WG_SERVER_IP ||
       -z $WG_HOSTNAME ||
@@ -102,7 +131,11 @@ if [[ -z $WG_SERVER_IP ||
   exit 1
 fi
 
-# Create ephemeral wireguard keys, that we don't need to save to disk.
+# Create ephemeral WireGuard keys for this session.
+# SECURITY NOTE: Private key is generated fresh each time run_setup.sh is called.
+# The key is saved to /etc/wireguard/pia.conf (mode 600, directory mode 700).
+# This allows reconnection via 'wg-quick up pia' without full re-authentication.
+# For maximum security, re-run ./run_setup.sh periodically to rotate keys.
 privKey=$(wg genkey)
 export privKey
 pubKey=$( echo "$privKey" | wg pubkey)
@@ -116,14 +149,14 @@ export pubKey
 # In case you want to troubleshoot the script, replace -s with -v.
 echo "Trying to connect to the PIA WireGuard API on $WG_SERVER_IP..."
 if [[ -z $DIP_TOKEN ]]; then
-  wireguard_json="$(curl -s -G \
+  wireguard_json="$(curl -s --tlsv1.2 -G \
     --connect-to "$WG_HOSTNAME::$WG_SERVER_IP:" \
     --cacert "ca.rsa.4096.crt" \
     --data-urlencode "pt=${PIA_TOKEN}" \
     --data-urlencode "pubkey=$pubKey" \
     "https://${WG_HOSTNAME}:1337/addKey" )"
 else
-  wireguard_json="$(curl -s -G \
+  wireguard_json="$(curl -s --tlsv1.2 -G \
     --connect-to "$WG_HOSTNAME::$WG_SERVER_IP:" \
     --cacert "ca.rsa.4096.crt" \
     --user "dedicated_ip_$DIP_TOKEN:$WG_SERVER_IP" \
@@ -135,6 +168,35 @@ export wireguard_json
 # Check if the API returned OK and stop this script if it didn't.
 if [[ $(echo "$wireguard_json" | jq -r '.status') != "OK" ]]; then
   >&2 echo -e "${red}Server did not return OK. Stopping now.${nc}"
+  exit 1
+fi
+
+# SECURITY: Validate API response has all required fields
+peer_ip=$(echo "$wireguard_json" | jq -r '.peer_ip // empty')
+server_key=$(echo "$wireguard_json" | jq -r '.server_key // empty')
+server_port=$(echo "$wireguard_json" | jq -r '.server_port // empty')
+dns_server=$(echo "$wireguard_json" | jq -r '.dns_servers[0] // empty')
+
+if [[ -z "$peer_ip" || -z "$server_key" || -z "$server_port" ]]; then
+  >&2 echo -e "${red}API response missing required fields (peer_ip, server_key, or server_port).${nc}"
+  exit 1
+fi
+
+# Validate IP address format (basic check)
+if ! [[ "$peer_ip" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+(/[0-9]+)?$ ]]; then
+  >&2 echo -e "${red}Invalid peer_ip format: $peer_ip${nc}"
+  exit 1
+fi
+
+# Validate server port is numeric and in valid range
+if ! [[ "$server_port" =~ ^[0-9]+$ ]] || [[ "$server_port" -lt 1 || "$server_port" -gt 65535 ]]; then
+  >&2 echo -e "${red}Invalid server_port: $server_port${nc}"
+  exit 1
+fi
+
+# Validate WireGuard public key format (base64, 44 chars with = padding)
+if ! [[ "$server_key" =~ ^[A-Za-z0-9+/]{43}=$ ]]; then
+  >&2 echo -e "${red}Invalid server_key format${nc}"
   exit 1
 fi
 
@@ -218,6 +280,10 @@ AllowedIPs = 0.0.0.0/0
 Endpoint = ${WG_SERVER_IP}:$(echo "$wireguard_json" | jq -r '.server_port')
 " > ${PIA_CONF_PATH} || exit 1
 chmod 600 ${PIA_CONF_PATH}
+
+# SECURITY: Clear sensitive data from memory (private key is now in config file)
+unset privKey wireguard_json
+
 echo -e "${green}OK!${nc}"
 
 

@@ -147,7 +147,7 @@ else
   # See: https://github.com/pia-foss/manual-connections/issues
   #
   # Basic sanity validation is performed below as a partial mitigation.
-  all_region_data=$(curl -s "$serverlist_url" | head -1)
+  all_region_data=$(curl -s --tlsv1.2 "$serverlist_url" | head -1)
 
   # Validate server list response
   if [[ -z "$all_region_data" ]]; then

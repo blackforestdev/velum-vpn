@@ -83,7 +83,7 @@ fi
 
 echo -n "Checking login credentials..."
 
-generateTokenResponse=$(curl -s --location --request POST \
+generateTokenResponse=$(curl -s --tlsv1.2 --location --request POST \
   'https://www.privateinternetaccess.com/api/client/v2/token' \
   --form "username=$PIA_USER" \
   --form "password=$PIA_PASS" )
@@ -99,12 +99,28 @@ fi
 echo -e "${green}OK!"
 echo
 token=$(echo "$generateTokenResponse" | jq -r '.token')
+
+# SECURITY: Validate token format (should be alphanumeric, reasonable length)
+if [[ -z "$token" || ${#token} -lt 50 || ${#token} -gt 500 ]]; then
+  echo -e "${red}Invalid token format or length.${nc}"
+  exit 1
+fi
+
+# Validate token contains only expected characters
+if ! [[ "$token" =~ ^[A-Za-z0-9_=-]+$ ]]; then
+  echo -e "${red}Token contains unexpected characters.${nc}"
+  exit 1
+fi
+
 tokenExpiration=$(timeout_timestamp)
 tokenLocation=/opt/piavpn-manual/token
 echo -e "Token retrieved successfully.${nc}"
 echo "$token" > "$tokenLocation" || exit 1
 echo "$tokenExpiration" >> "$tokenLocation"
 chmod 600 "$tokenLocation"
+
+# SECURITY: Clear credentials from memory
+unset PIA_USER PIA_PASS generateTokenResponse
 echo
 echo "This token will expire in 24 hours, on $tokenExpiration."
 echo

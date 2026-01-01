@@ -39,6 +39,25 @@ check_tool() {
 check_tool curl
 check_tool jq
 
+# SECURITY: Check token expiry before making API calls
+token_file="/opt/piavpn-manual/token"
+if [[ -f "$token_file" ]]; then
+  token_expiry=$(sed -n '2p' "$token_file" 2>/dev/null)
+  if [[ -n "$token_expiry" ]]; then
+    if [[ "$(uname)" == "Darwin" ]]; then
+      expiry_epoch=$(date -jf "%a %b %d %T %Z %Y" "$token_expiry" "+%s" 2>/dev/null || echo 0)
+    else
+      expiry_epoch=$(date -d "$token_expiry" "+%s" 2>/dev/null || echo 0)
+    fi
+    now_epoch=$(date "+%s")
+    if [[ "$expiry_epoch" -gt 0 && "$now_epoch" -gt "$expiry_epoch" ]]; then
+      echo -e "${red}ERROR: Authentication token has expired!${nc}"
+      echo "Port forwarding will fail. Please re-run ./run_setup.sh"
+      exit 1
+    fi
+  fi
+fi
+
 # Check if the mandatory environment variables are set.
 if [[ -z $PF_GATEWAY || -z $PIA_TOKEN || -z $PF_HOSTNAME ]]; then
   echo "This script requires 3 env vars:"
@@ -108,7 +127,7 @@ if [[ -z $PAYLOAD_AND_SIGNATURE ]]; then
 
     # Try using VPN interface to reach WG server directly
     if [[ -n "$wg_interface" && -n "$WG_SERVER_IP" ]]; then
-      curl_output=$(curl -s -m 10 -w "\nHTTP_CODE:%{http_code}" \
+      curl_output=$(curl -s --tlsv1.2 -m 10 -w "\nHTTP_CODE:%{http_code}" \
         --interface "$wg_interface" \
         --connect-to "$PF_HOSTNAME::$WG_SERVER_IP:" \
         --cacert "ca.rsa.4096.crt" \
@@ -116,7 +135,7 @@ if [[ -z $PAYLOAD_AND_SIGNATURE ]]; then
         "https://${PF_HOSTNAME}:19999/getSignature" 2>&1)
     else
       # Fallback to PF_GATEWAY
-      curl_output=$(curl -s -m 10 -w "\nHTTP_CODE:%{http_code}" \
+      curl_output=$(curl -s --tlsv1.2 -m 10 -w "\nHTTP_CODE:%{http_code}" \
         --connect-to "$PF_HOSTNAME::$PF_GATEWAY:" \
         --cacert "ca.rsa.4096.crt" \
         -G --data-urlencode "token=${PIA_TOKEN}" \
@@ -150,6 +169,29 @@ if [[ $(echo "$payload_and_signature" | jq -r '.status') != "OK" ]]; then
   echo -e "${red}This may indicate the token has expired, or the server does not support port forwarding.${nc}"
   exit 1
 fi
+
+# SECURITY: Validate response has required fields
+pf_signature=$(echo "$payload_and_signature" | jq -r '.signature // empty')
+pf_payload=$(echo "$payload_and_signature" | jq -r '.payload // empty')
+
+if [[ -z "$pf_signature" || -z "$pf_payload" ]]; then
+  echo -e "${red}API response missing signature or payload.${nc}"
+  exit 1
+fi
+
+# Validate payload is base64 and contains expected fields
+if ! echo "$pf_payload" | base64 -d 2>/dev/null | jq -e '.port' >/dev/null 2>&1; then
+  echo -e "${red}Invalid payload format - cannot decode or missing port.${nc}"
+  exit 1
+fi
+
+# Validate port is in valid range
+pf_port=$(echo "$pf_payload" | base64 -d | jq -r '.port')
+if ! [[ "$pf_port" =~ ^[0-9]+$ ]] || [[ "$pf_port" -lt 1024 || "$pf_port" -gt 65535 ]]; then
+  echo -e "${red}Invalid forwarded port: $pf_port (expected 1024-65535)${nc}"
+  exit 1
+fi
+
 echo -e "${green}OK!${nc}"
 
 # We need to get the signature out of the previous response.
@@ -182,7 +224,7 @@ Trying to bind the port... "
 # Use VPN interface to reach the WG server we're connected to
 while true; do
   if [[ -n "$wg_interface" && -n "$WG_SERVER_IP" ]]; then
-    bind_port_response="$(curl -Gs -m 5 \
+    bind_port_response="$(curl --tlsv1.2 -Gs -m 5 \
       --interface "$wg_interface" \
       --connect-to "$PF_HOSTNAME::$WG_SERVER_IP:" \
       --cacert "ca.rsa.4096.crt" \
@@ -190,7 +232,7 @@ while true; do
       --data-urlencode "signature=${signature}" \
       "https://${PF_HOSTNAME}:19999/bindPort")"
   else
-    bind_port_response="$(curl -Gs -m 5 \
+    bind_port_response="$(curl --tlsv1.2 -Gs -m 5 \
       --connect-to "$PF_HOSTNAME::$PF_GATEWAY:" \
       --cacert "ca.rsa.4096.crt" \
       --data-urlencode "payload=${payload}" \

@@ -67,7 +67,7 @@ dipSavedLocation=/opt/piavpn-manual/dipAddress
 
 echo -n "Checking DIP token..."
 
-generateDIPResponse=$(curl -s --location --request POST \
+generateDIPResponse=$(curl -s --tlsv1.2 --location --request POST \
   'https://www.privateinternetaccess.com/api/client/v2/dedicated_ip' \
   --header 'Content-Type: application/json' \
   --header "Authorization: Token $PIA_TOKEN" \
@@ -109,3 +109,6 @@ echo $keyHostname >> /opt/piavpn-manual/dipAddress
 echo $dipExpiration >> /opt/piavpn-manual/dipAddress
 echo $pfCapable >> /opt/piavpn-manual/dipAddress
 chmod 600 /opt/piavpn-manual/dipAddress
+
+# SECURITY: Clear sensitive data from memory
+unset DIP_TOKEN generateDIPResponse

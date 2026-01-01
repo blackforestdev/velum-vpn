@@ -99,14 +99,14 @@ echo ""
 echo "${BLUE}[2] Public IP Check${NC}"
 
 # Get public IP from multiple sources
-ip_ipify=$(curl -s --max-time 5 https://api.ipify.org 2>/dev/null)
-ip_icanhazip=$(curl -s --max-time 5 https://icanhazip.com 2>/dev/null | tr -d '[:space:]')
+ip_ipify=$(curl -s --tlsv1.2 --max-time 5 https://api.ipify.org 2>/dev/null)
+ip_icanhazip=$(curl -s --tlsv1.2 --max-time 5 https://icanhazip.com 2>/dev/null | tr -d '[:space:]')
 
 if [[ -n "$ip_ipify" ]]; then
   echo "    ipify.org:  ${GREEN}$ip_ipify${NC}"
 
   # Check if it's a PIA IP (M247/PIA ranges)
-  ip_info=$(curl -s --max-time 5 "https://ipinfo.io/$ip_ipify/json" 2>/dev/null)
+  ip_info=$(curl -s --tlsv1.2 --max-time 5 "https://ipinfo.io/$ip_ipify/json" 2>/dev/null)
   if [[ -n "$ip_info" ]]; then
     org=$(echo "$ip_info" | grep -o '"org": *"[^"]*"' | cut -d'"' -f4)
     city=$(echo "$ip_info" | grep -o '"city": *"[^"]*"' | cut -d'"' -f4)
@@ -256,7 +256,7 @@ else
 fi
 
 # HTTP test
-http_test=$(curl -s --max-time 5 -o /dev/null -w "%{http_code}" https://www.google.com 2>/dev/null)
+http_test=$(curl -s --tlsv1.2 --max-time 5 -o /dev/null -w "%{http_code}" https://www.google.com 2>/dev/null)
 if [[ "$http_test" =~ ^[23] ]]; then
   echo "    HTTPS:      $PASS - Google responded $http_test"
   ((TESTS_PASSED++))
@@ -295,6 +295,16 @@ if [[ "$(uname)" == "Darwin" ]]; then
       pass_rules=$(sudo pfctl -a pia_killswitch -s rules 2>/dev/null | grep -c "pass")
       echo "    Kill switch: $PASS - Active ($block_rules block, $pass_rules pass rules)"
       ((TESTS_PASSED++))
+
+      # Check IPv6 blocking
+      ipv6_blocked=$(sudo pfctl -a pia_killswitch -s rules 2>/dev/null | grep -c "block.*inet6")
+      if [[ "$ipv6_blocked" -gt 0 ]]; then
+        echo "    IPv6 block: $PASS - IPv6 blocked at firewall"
+        ((TESTS_PASSED++))
+      else
+        echo "    IPv6 block: $WARN - IPv6 not blocked by kill switch"
+        ((TESTS_WARNED++))
+      fi
 
       # Show what's allowed
       lan_allowed=$(sudo pfctl -a pia_killswitch -s rules 2>/dev/null | grep "pass" | grep -v "lo0\|utun\|loopback" | head -1)
@@ -415,6 +425,23 @@ for config_path in /etc/wireguard/pia.conf /usr/local/etc/wireguard/pia.conf; do
   if sudo test -f "$config_path" 2>/dev/null; then
     echo "    Quick:      ${GREEN}wg-quick up pia${NC}"
     echo "    Config:     ${GREEN}$config_path${NC}"
+
+    # Show config age (indicates key age)
+    config_mtime=$(sudo stat -f "%m" "$config_path" 2>/dev/null || sudo stat -c "%Y" "$config_path" 2>/dev/null)
+    if [[ -n "$config_mtime" ]]; then
+      now=$(date +%s)
+      age_hours=$(( (now - config_mtime) / 3600 ))
+      age_days=$(( age_hours / 24 ))
+      if [[ "$age_days" -gt 30 ]]; then
+        echo "    Key age:    $WARN - Config is ${age_days} days old (consider rotating)"
+        ((TESTS_WARNED++))
+      elif [[ "$age_days" -gt 0 ]]; then
+        echo "    Key age:    ${GREEN}${age_days} days${NC}"
+      else
+        echo "    Key age:    ${GREEN}${age_hours} hours${NC}"
+      fi
+    fi
+
     wg_config_found=true
     ((TESTS_PASSED++))
     break
