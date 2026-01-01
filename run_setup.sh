@@ -557,6 +557,65 @@ fi
 export PIA_DNS
 echo -e "${green}PIA_DNS=$PIA_DNS${nc}"
 
+# Check for in-line definition of PIA_KILLSWITCH and prompt for input
+if [[ -z $PIA_KILLSWITCH ]]; then
+  echo
+  echo "The kill switch blocks ALL internet traffic if the VPN drops,"
+  echo "preventing your real IP from being exposed."
+  echo -n "Do you want to enable the kill switch? ([Y]es/[n]o): "
+  read -r killswitchChoice
+  echo
+  PIA_KILLSWITCH="true"
+  if echo "${killswitchChoice:0:1}" | grep -iq n; then
+    PIA_KILLSWITCH="false"
+  fi
+fi
+export PIA_KILLSWITCH
+echo -e "${green}PIA_KILLSWITCH=$PIA_KILLSWITCH${nc}"
+
+# If kill switch enabled, prompt for LAN policy
+if [[ $PIA_KILLSWITCH == "true" && -z $PIA_KILLSWITCH_LAN ]]; then
+  # Auto-detect local subnet for display
+  ks_gateway=$(route -n get default 2>/dev/null | grep "gateway:" | awk '{print $2}')
+  ks_interface=$(route -n get default 2>/dev/null | grep "interface:" | awk '{print $2}')
+  ks_local_ip=$(ipconfig getifaddr "$ks_interface" 2>/dev/null)
+  ks_netmask=$(ipconfig getoption "$ks_interface" subnet_mask 2>/dev/null)
+  if [[ -n "$ks_local_ip" && -n "$ks_netmask" ]]; then
+    # Simple subnet calculation
+    IFS='.' read -r i1 i2 i3 i4 <<< "$ks_local_ip"
+    IFS='.' read -r m1 m2 m3 m4 <<< "$ks_netmask"
+    ks_detected="$((i1 & m1)).$((i2 & m2)).$((i3 & m3)).$((i4 & m4))"
+    # Calculate CIDR
+    ks_cidr=0
+    for octet in $m1 $m2 $m3 $m4; do
+      case $octet in
+        255) ks_cidr=$((ks_cidr + 8)) ;; 254) ks_cidr=$((ks_cidr + 7)) ;;
+        252) ks_cidr=$((ks_cidr + 6)) ;; 248) ks_cidr=$((ks_cidr + 5)) ;;
+        240) ks_cidr=$((ks_cidr + 4)) ;; 224) ks_cidr=$((ks_cidr + 3)) ;;
+        192) ks_cidr=$((ks_cidr + 2)) ;; 128) ks_cidr=$((ks_cidr + 1)) ;;
+      esac
+    done
+    ks_detected="$ks_detected/$ks_cidr"
+  fi
+
+  echo "Kill switch LAN policy - do you want to allow local network access?"
+  echo "This lets you access printers, NAS, and other LAN devices."
+  echo
+  echo "  1) Block all LAN traffic (maximum security, use for public WiFi)"
+  echo "  2) Allow detected subnet: ${green}${ks_detected:-unknown}${nc}"
+  echo
+  read -r -p "Choose LAN policy [1-2]: " lanChoice
+  echo
+  case $lanChoice in
+    1) PIA_KILLSWITCH_LAN="block" ;;
+    *) PIA_KILLSWITCH_LAN="detect" ;;
+  esac
+fi
+if [[ $PIA_KILLSWITCH == "true" ]]; then
+  export PIA_KILLSWITCH_LAN
+  echo -e "${green}PIA_KILLSWITCH_LAN=$PIA_KILLSWITCH_LAN${nc}"
+fi
+
 CONNECTION_READY="true"
 export CONNECTION_READY
 

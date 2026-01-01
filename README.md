@@ -74,6 +74,8 @@ read -p "Username: " user && read -sp "Password: " pass && printf "%s\n%s\n" "$u
 | `VPN_PROTOCOL` | `wireguard` or `openvpn*` | prompted |
 | `PIA_PF` | Enable port forwarding | `true` |
 | `PIA_DNS` | Use PIA DNS servers | `true` |
+| `PIA_KILLSWITCH` | Enable kill switch | prompted |
+| `PIA_KILLSWITCH_LAN` | LAN policy: `block`, `detect`, or CIDR | `detect` |
 | `PREFERRED_REGION` | Region ID (e.g., `panama`) | auto-select |
 | `ALLOW_GEO_SERVERS` | Include geolocated servers | `true` |
 | `MAX_LATENCY` | Server response timeout (seconds) | `0.05` |
@@ -82,7 +84,50 @@ read -p "Username: " user && read -sp "Password: " pass && printf "%s\n%s\n" "$u
 ### One-liner Connection
 
 ```bash
-sudo PIA_USER=p1234567 PIA_PASS=xxx VPN_PROTOCOL=wireguard PIA_PF=true ./run_setup.sh
+sudo PIA_USER=p1234567 PIA_PASS=xxx VPN_PROTOCOL=wireguard PIA_KILLSWITCH=true ./run_setup.sh
+```
+
+## Kill Switch
+
+The kill switch blocks ALL internet traffic if the VPN connection drops, preventing your real IP from being exposed. This is critical for privacy-sensitive use cases.
+
+### How It Works
+
+- Uses macOS pf (packet filter) firewall
+- Blocks all traffic except through the VPN tunnel
+- Auto-detects your local subnet for LAN access
+- Sends macOS notification if VPN drops unexpectedly
+
+### LAN Policies
+
+| Policy | Description | Use Case |
+|--------|-------------|----------|
+| `block` | Block all LAN traffic | Public WiFi, maximum security |
+| `detect` | Auto-detect and allow local subnet | Home/office with printers, NAS |
+| `10.0.1.0/24` | Allow specific CIDR | Custom network configuration |
+
+### Manual Control
+
+```bash
+# Check kill switch status
+sudo ./pia-killswitch.sh status
+
+# Manually enable (if not using run_setup.sh)
+sudo ./pia-killswitch.sh enable --vpn-ip 158.173.21.201 --lan-policy detect
+
+# Manually disable
+sudo ./pia-killswitch.sh disable
+```
+
+### Verify Kill Switch
+
+Run `pia-test` to verify the kill switch is active:
+
+```
+[6] Kill Switch
+    pf status:  Enabled
+    Kill switch: PASS - Active (1 block, 8 pass rules)
+    LAN allowed: 10.0.0.0/24
 ```
 
 ## Dependencies

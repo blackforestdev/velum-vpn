@@ -61,6 +61,37 @@ else
   if [[ -n "$endpoint" ]]; then
     echo "    Endpoint:   ${GREEN}$endpoint${NC}"
   fi
+
+  # Check AllowedIPs captures all traffic
+  allowed_ips=$(echo "$wg_output" | grep "allowed ips:" | sed 's/.*allowed ips: //')
+  if [[ "$allowed_ips" == *"0.0.0.0/0"* ]] || [[ "$allowed_ips" == *"0.0.0.0/1"* && "$allowed_ips" == *"128.0.0.0/1"* ]]; then
+    echo "    AllowedIPs: $PASS - All traffic routed through tunnel"
+    ((TESTS_PASSED++))
+  else
+    echo "    AllowedIPs: $FAIL - Not capturing all traffic: $allowed_ips"
+    ((TESTS_FAILED++))
+  fi
+
+  # Check handshake age (stale = potential issue)
+  if [[ -n "$handshake" ]]; then
+    # Parse handshake age
+    if [[ "$handshake" == *"minute"* ]]; then
+      handshake_mins=$(echo "$handshake" | grep -o '[0-9]*' | head -1)
+      if [[ "$handshake_mins" -gt 5 ]]; then
+        echo "    Freshness:  $WARN - Last handshake ${handshake_mins}m ago (may be stale)"
+        ((TESTS_WARNED++))
+      else
+        echo "    Freshness:  $PASS - Handshake recent"
+        ((TESTS_PASSED++))
+      fi
+    elif [[ "$handshake" == *"second"* ]]; then
+      echo "    Freshness:  $PASS - Handshake very recent"
+      ((TESTS_PASSED++))
+    elif [[ "$handshake" == *"hour"* ]] || [[ "$handshake" == *"day"* ]]; then
+      echo "    Freshness:  $WARN - Handshake stale ($handshake)"
+      ((TESTS_WARNED++))
+    fi
+  fi
 fi
 echo ""
 
@@ -108,28 +139,80 @@ echo ""
 # --- Test 3: DNS Leak Test ---
 echo "${BLUE}[3] DNS Leak Test${NC}"
 
+# Get PIA DNS from WireGuard config (dynamic, not hardcoded)
+pia_dns=""
+if [[ -f /etc/wireguard/pia.conf ]]; then
+  pia_dns=$(grep "^DNS" /etc/wireguard/pia.conf 2>/dev/null | cut -d= -f2 | tr -d ' ')
+fi
+# Fallback: check system DNS for 10.0.0.x (PIA's unfortunate choice)
+if [[ -z "$pia_dns" ]]; then
+  pia_dns=$(scutil --dns 2>/dev/null | grep "nameserver\[" | awk '{print $3}' | grep "^10\.0\.0\." | head -1)
+fi
+# Last resort: try common PIA DNS IPs
+if [[ -z "$pia_dns" ]]; then
+  for try_dns in 10.0.0.243 10.0.0.242 10.0.0.241; do
+    if nslookup -timeout=1 google.com "$try_dns" >/dev/null 2>&1; then
+      pia_dns="$try_dns"
+      break
+    fi
+  done
+fi
+
 # Check configured DNS
 dns_servers=$(scutil --dns 2>/dev/null | grep "nameserver\[" | head -5 | awk '{print $3}' | sort -u | tr '\n' ' ')
 echo "    Configured: ${GREEN}${dns_servers:-None}${NC}"
 
-# Test DNS resolution through specific server
-dns_test=$(nslookup -timeout=3 google.com 10.0.0.243 2>/dev/null)
-if [[ $? -eq 0 ]]; then
-  echo "    PIA DNS:    $PASS - Resolving through 10.0.0.243"
-  ((TESTS_PASSED++))
-else
-  echo "    PIA DNS:    $FAIL - Cannot resolve through PIA DNS"
-  ((TESTS_FAILED++))
-fi
-
-# Check if DNS route is through tunnel
-dns_route=$(netstat -rn 2>/dev/null | grep "^10.0.0.243")
-if [[ "$dns_route" == *"utun"* ]]; then
-  echo "    DNS Route:  $PASS - Routed through VPN tunnel"
-  ((TESTS_PASSED++))
-else
-  echo "    DNS Route:  $WARN - May be routed locally (check: netstat -rn | grep 10.0.0.243)"
+if [[ -z "$pia_dns" ]]; then
+  echo "    PIA DNS:    $WARN - Could not detect PIA DNS server"
   ((TESTS_WARNED++))
+else
+  echo "    PIA DNS:    ${GREEN}$pia_dns${NC}"
+
+  # Test DNS resolution through PIA DNS (nslookup)
+  dns_test=$(nslookup -timeout=3 google.com "$pia_dns" 2>/dev/null)
+  if [[ $? -eq 0 ]]; then
+    echo "    nslookup:   $PASS - Resolving through PIA DNS"
+    ((TESTS_PASSED++))
+  else
+    echo "    nslookup:   $FAIL - Cannot resolve through PIA DNS"
+    ((TESTS_FAILED++))
+  fi
+
+  # Test with dig if available (different code path)
+  if command -v dig >/dev/null 2>&1; then
+    dig_test=$(dig +short +time=3 "@$pia_dns" google.com 2>/dev/null)
+    if [[ -n "$dig_test" ]]; then
+      echo "    dig:        $PASS - Resolving through PIA DNS"
+      ((TESTS_PASSED++))
+    else
+      echo "    dig:        $FAIL - Cannot resolve through PIA DNS"
+      ((TESTS_FAILED++))
+    fi
+  fi
+
+  # Test with host if available (yet another code path)
+  if command -v host >/dev/null 2>&1; then
+    host_test=$(host -W 3 google.com "$pia_dns" 2>/dev/null)
+    if [[ $? -eq 0 ]]; then
+      echo "    host:       $PASS - Resolving through PIA DNS"
+      ((TESTS_PASSED++))
+    else
+      echo "    host:       $FAIL - Cannot resolve through PIA DNS"
+      ((TESTS_FAILED++))
+    fi
+  fi
+
+  # Check if DNS route is through tunnel (only for 10.x.x.x addresses)
+  if [[ "$pia_dns" == 10.* ]]; then
+    dns_route=$(netstat -rn 2>/dev/null | grep "^$pia_dns")
+    if [[ "$dns_route" == *"utun"* ]]; then
+      echo "    DNS Route:  $PASS - Routed through VPN tunnel"
+      ((TESTS_PASSED++))
+    else
+      echo "    DNS Route:  $WARN - May route locally (PIA uses 10.0.0.x which conflicts with common LANs)"
+      ((TESTS_WARNED++))
+    fi
+  fi
 fi
 echo ""
 
@@ -181,21 +264,95 @@ else
   echo "    HTTPS:      $FAIL - HTTP code: $http_test"
   ((TESTS_FAILED++))
 fi
-echo ""
 
-# --- Test 6: Potential Leak Sources ---
-echo "${BLUE}[6] Potential Leak Sources${NC}"
-
-# Check for IPv6
-ipv6_enabled=0
-if [[ "$(networksetup -getinfo Wi-Fi 2>/dev/null | grep 'IPv6:')" == *"Automatic"* ]]; then
-  echo "    IPv6 Wi-Fi: $WARN - IPv6 enabled (potential leak)"
-  ipv6_enabled=1
+# MTU test - verify tunnel can handle typical payloads
+# WireGuard MTU is typically 1420, so 1372 data + 28 header = 1400 should work
+mtu_test=$(ping -c 1 -W 3 -D -s 1372 1.1.1.1 2>/dev/null)
+if [[ $? -eq 0 ]]; then
+  echo "    MTU (1400): $PASS - Large packets work through tunnel"
+  ((TESTS_PASSED++))
+else
+  echo "    MTU (1400): $WARN - Tunnel MTU may be reduced"
   ((TESTS_WARNED++))
 fi
+echo ""
 
-if [[ $ipv6_enabled -eq 0 ]]; then
-  echo "    IPv6:       $PASS - Disabled"
+# --- Test 6: Kill Switch / Firewall ---
+echo "${BLUE}[6] Kill Switch${NC}"
+
+# Check pf firewall status (macOS)
+if [[ "$(uname)" == "Darwin" ]]; then
+  pf_enabled=$(sudo pfctl -s info 2>/dev/null | grep "Status:" | awk '{print $2}')
+
+  if [[ "$pf_enabled" == "Enabled" ]]; then
+    echo "    pf status:  ${GREEN}Enabled${NC}"
+
+    # Check specifically for PIA kill switch anchor
+    pia_ks_rules=$(sudo pfctl -a pia_killswitch -s rules 2>/dev/null | wc -l | tr -d ' ')
+    if [[ "$pia_ks_rules" -gt 0 ]]; then
+      # Get some details about the rules
+      block_rules=$(sudo pfctl -a pia_killswitch -s rules 2>/dev/null | grep -c "block")
+      pass_rules=$(sudo pfctl -a pia_killswitch -s rules 2>/dev/null | grep -c "pass")
+      echo "    Kill switch: $PASS - Active ($block_rules block, $pass_rules pass rules)"
+      ((TESTS_PASSED++))
+
+      # Show what's allowed
+      lan_allowed=$(sudo pfctl -a pia_killswitch -s rules 2>/dev/null | grep "pass" | grep -v "lo0\|utun\|loopback" | head -1)
+      if [[ -n "$lan_allowed" ]]; then
+        lan_subnet=$(echo "$lan_allowed" | grep -oE '([0-9]{1,3}\.){3}[0-9]{1,3}/[0-9]+' | head -1)
+        if [[ -n "$lan_subnet" ]]; then
+          echo "    LAN allowed: ${GREEN}$lan_subnet${NC}"
+        fi
+      fi
+    else
+      # Check for any other block rules
+      other_blocks=$(sudo pfctl -s rules 2>/dev/null | grep -c "block")
+      if [[ "$other_blocks" -gt 0 ]]; then
+        echo "    Kill switch: $WARN - pf has blocks but PIA kill switch not active"
+        ((TESTS_WARNED++))
+      else
+        echo "    Kill switch: $WARN - Not active (traffic may leak if VPN drops)"
+        ((TESTS_WARNED++))
+      fi
+    fi
+  else
+    echo "    pf status:  ${YELLOW}Disabled${NC}"
+    echo "    Kill switch: $WARN - Not active (traffic may leak if VPN drops)"
+    ((TESTS_WARNED++))
+  fi
+else
+  # Linux - check iptables
+  if command -v iptables >/dev/null 2>&1; then
+    ipt_rules=$(sudo iptables -L -n 2>/dev/null | grep -c "DROP\|REJECT")
+    if [[ "$ipt_rules" -gt 0 ]]; then
+      echo "    iptables:   $PASS - $ipt_rules drop/reject rules found"
+      ((TESTS_PASSED++))
+    else
+      echo "    iptables:   $WARN - No kill switch rules detected"
+      ((TESTS_WARNED++))
+    fi
+  fi
+fi
+echo ""
+
+# --- Test 7: Potential Leak Sources ---
+echo "${BLUE}[7] Potential Leak Sources${NC}"
+
+# Check for IPv6 on ALL network interfaces
+ipv6_leaks=""
+while IFS= read -r service; do
+  [[ -z "$service" ]] && continue
+  ipv6_status=$(networksetup -getinfo "$service" 2>/dev/null | grep "IPv6:" | awk '{print $2}')
+  if [[ "$ipv6_status" == "Automatic" || "$ipv6_status" == "Manual" ]]; then
+    ipv6_leaks="$ipv6_leaks $service"
+  fi
+done < <(networksetup -listallnetworkservices 2>/dev/null | tail -n +2)
+
+if [[ -n "$ipv6_leaks" ]]; then
+  echo "    IPv6:       $WARN - Enabled on:$ipv6_leaks"
+  ((TESTS_WARNED++))
+else
+  echo "    IPv6:       $PASS - Disabled on all interfaces"
   ((TESTS_PASSED++))
 fi
 
@@ -213,6 +370,59 @@ if [[ -n "$leak_procs" ]]; then
 else
   echo "    Remote:     $PASS - No remote access tools detected"
   ((TESTS_PASSED++))
+fi
+
+# WebRTC - browser-level leak, cannot reliably test from CLI
+# NOTE: WebRTC leaks occur inside browsers, not at system/network level.
+# Each browser has different settings and users may intentionally use
+# different browsers for VPN vs non-VPN activities.
+# TODO: Future option - headless browser test with puppeteer/playwright
+echo "    WebRTC:     ${YELLOW}Manual check required${NC} - browserleaks.com/webrtc"
+echo ""
+
+# --- Test 8: Port Forwarding (optional feature) ---
+echo "${BLUE}[8] Port Forwarding${NC}"
+
+# Port forwarding is optional - only some regions support it, and it's not
+# required for VPN security. This section is informational only.
+pf_pid=$(pgrep -f "port_forwarding.sh" 2>/dev/null)
+if [[ -n "$pf_pid" ]]; then
+  echo "    Status:     ${GREEN}Active${NC} (PID: $pf_pid)"
+  ((TESTS_PASSED++))
+
+  # Try to find the forwarded port
+  if [[ -f /opt/piavpn-manual/debug_info ]]; then
+    pf_port=$(grep -o "port is [0-9]*" /opt/piavpn-manual/debug_info 2>/dev/null | tail -1 | awk '{print $3}')
+    if [[ -n "$pf_port" ]]; then
+      echo "    Port:       ${GREEN}$pf_port${NC}"
+    fi
+  fi
+else
+  echo "    Status:     ${YELLOW}Not active${NC} (optional feature)"
+fi
+echo ""
+
+# --- Test 9: Reconnection Info ---
+echo "${BLUE}[9] Reconnection${NC}"
+
+# This section is informational - connection health is verified in Test 1.
+# Show how the user can reconnect if the VPN drops.
+# Config may be in /etc/wireguard/ (Linux default) or /usr/local/etc/wireguard/ (macOS Homebrew)
+# Directory is mode 700, so we need to check with elevated permissions
+
+wg_config_found=false
+for config_path in /etc/wireguard/pia.conf /usr/local/etc/wireguard/pia.conf; do
+  if sudo test -f "$config_path" 2>/dev/null; then
+    echo "    Quick:      ${GREEN}wg-quick up pia${NC}"
+    echo "    Config:     ${GREEN}$config_path${NC}"
+    wg_config_found=true
+    ((TESTS_PASSED++))
+    break
+  fi
+done
+
+if [[ "$wg_config_found" == "false" ]]; then
+  echo "    Method:     ${YELLOW}./run_setup.sh${NC} (no saved config for wg-quick)"
 fi
 echo ""
 

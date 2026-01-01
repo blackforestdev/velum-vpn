@@ -173,11 +173,35 @@ mkdir -p "$(dirname "$PIA_CONF_PATH")"
 chmod 700 "$(dirname "$PIA_CONF_PATH")"
 # Create config file with restrictive permissions (private key inside)
 umask 077
-# Build PostUp command for DNS route fix (macOS only)
-postUpCmd=""
+
+# Get the script directory for kill switch path
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# Build PostUp commands
+postUpCmds=""
+# DNS route fix (macOS only)
 if [[ "$(uname)" == "Darwin" && -n "$dnsServer" ]]; then
-  # Add route for PIA DNS through VPN interface on reconnect
-  postUpCmd="PostUp = route -q -n add -host $dnsServer -interface %i 2>/dev/null || true"
+  postUpCmds="PostUp = route -q -n add -host $dnsServer -interface %i 2>/dev/null || true"
+fi
+# Kill switch enable (macOS only)
+if [[ "$(uname)" == "Darwin" && "$PIA_KILLSWITCH" == "true" ]]; then
+  ks_vpn_port=$(echo "$wireguard_json" | jq -r '.server_port')
+  ks_cmd="$SCRIPT_DIR/pia-killswitch.sh enable --vpn-ip $WG_SERVER_IP --vpn-port $ks_vpn_port --vpn-iface %i --lan-policy ${PIA_KILLSWITCH_LAN:-detect}"
+  if [[ -n "$postUpCmds" ]]; then
+    postUpCmds="$postUpCmds
+PostUp = $ks_cmd"
+  else
+    postUpCmds="PostUp = $ks_cmd"
+  fi
+fi
+
+# Build PostDown commands
+postDownCmds=""
+# Kill switch disable + notification (macOS only)
+if [[ "$(uname)" == "Darwin" && "$PIA_KILLSWITCH" == "true" ]]; then
+  # Disable kill switch and notify user
+  postDownCmds="PostDown = $SCRIPT_DIR/pia-killswitch.sh disable
+PostDown = $SCRIPT_DIR/pia-killswitch.sh notify"
 fi
 
 echo "
@@ -185,7 +209,8 @@ echo "
 Address = $(echo "$wireguard_json" | jq -r '.peer_ip')
 PrivateKey = $privKey
 $dnsSettingForVPN
-$postUpCmd
+$postUpCmds
+$postDownCmds
 [Peer]
 PersistentKeepalive = 25
 PublicKey = $(echo "$wireguard_json" | jq -r '.server_key')
