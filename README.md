@@ -113,12 +113,20 @@ sudo sysctl -w net.ipv6.conf.default.disable_ipv6=1
 
 If your local network uses 10.0.0.0/24, PIA's DNS (10.0.0.243) may route locally instead of through the VPN. This fork automatically adds an explicit route through the tunnel.
 
-### Disconnect
+### Connect / Disconnect
+
+After initial setup, the WireGuard config is saved to `/etc/wireguard/pia.conf`. You can reconnect without re-running setup:
 
 ```bash
+# Connect
+sudo wg-quick up pia
+
+# Disconnect
 sudo wg-quick down pia
 pkill -f port_forwarding.sh
 ```
+
+**Note:** Port forwarding requires re-running `./run_setup.sh` or manually starting `./port_forwarding.sh`.
 
 ## Geolocated Servers
 
