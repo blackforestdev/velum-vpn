@@ -251,7 +251,7 @@ if [[ -z $PIA_TOKEN ]]; then
   export PIA_TOKEN
   rm -f /opt/piavpn-manual/token
 else
-  echo -e "Using existing token ${green}$PIA_TOKEN${nc}."
+  echo -e "Using existing token.${nc}"
   echo
 fi
 
@@ -260,7 +260,7 @@ if [[ $VPN_PROTOCOL == "wireguard" ]]; then
   echo "The ./get_region.sh script got started with"
   echo -e "${green}VPN_PROTOCOL=wireguard${nc}, so we will automatically connect to WireGuard,"
   echo "by running this command:"
-  echo -e "$ ${green}PIA_TOKEN=$PIA_TOKEN \\"
+  echo -e "$ ${green}PIA_TOKEN=<token> \\"
   echo "WG_SERVER_IP=$bestServer_WG_IP WG_HOSTNAME=$bestServer_WG_hostname \\"
   echo -e "PIA_PF=$PIA_PF ./connect_to_wireguard_with_token.sh${nc}"
   echo
@@ -282,7 +282,7 @@ if [[ $VPN_PROTOCOL == openvpn* ]]; then
   echo "The ./get_region.sh script got started with"
   echo -e "${green}VPN_PROTOCOL=$VPN_PROTOCOL${nc}, so we will automatically"
   echo "connect to OpenVPN, by running this command:"
-  echo -e "$ ${green}PIA_PF=$PIA_PF PIA_TOKEN=$PIA_TOKEN \\"
+  echo -e "$ ${green}PIA_PF=$PIA_PF PIA_TOKEN=<token> \\"
   echo "  OVPN_SERVER_IP=$serverIP \\"
   echo "  OVPN_HOSTNAME=$serverHostname \\"
   echo "  CONNECTION_SETTINGS=$VPN_PROTOCOL \\"

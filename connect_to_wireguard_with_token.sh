@@ -223,7 +223,7 @@ if [[ $PIA_CONNECT == "true" ]]; then
   # This section will stop the script if PIA_PF is not set to "true".
   if [[ $PIA_PF != "true" ]]; then
     echo "If you want to also enable port forwarding, you can start the script:"
-    echo -e "$ ${green}PIA_TOKEN=$PIA_TOKEN" \
+    echo -e "$ ${green}PIA_TOKEN=<token>" \
       "PF_GATEWAY=$WG_SERVER_IP" \
       "PF_HOSTNAME=$WG_HOSTNAME" \
       "./port_forwarding.sh${nc}"
@@ -247,7 +247,7 @@ if [[ $PIA_CONNECT == "true" ]]; then
   PF_GW="$WG_SERVER_IP"
 
   echo -e "Starting procedure to enable port forwarding by running the following command:
-  $ ${green}PIA_TOKEN=$PIA_TOKEN \\
+  $ ${green}PIA_TOKEN=<token> \\
     PF_GATEWAY=$PF_GW \\
     PF_HOSTNAME=$WG_HOSTNAME \\
     ./port_forwarding.sh${nc}"

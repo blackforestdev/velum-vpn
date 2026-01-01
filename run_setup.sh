@@ -209,7 +209,7 @@ fi
 if [[ -z $DIP_TOKEN ]]; then
   echo "${green}DIP_TOKEN=none${nc}"
 else
-  echo "${green}DIP_TOKEN=$DIP_TOKEN${nc}"
+  echo "${green}DIP_TOKEN=<configured>${nc}"
 fi
 echo
 
@@ -552,8 +552,8 @@ elif [[ $VPN_PROTOCOL == wireguard ]]; then
   echo -e "You will be connecting with ${green}WG_SERVER_IP=$dipAddress${nc} using"
   echo -e "${green}VPN_PROTOCOL=wireguard${nc}, so we will automatically connect to WireGuard,"
   echo "by running this command:"
-  echo -e "$ ${green}PIA_PF=$PIA_PF PIA_TOKEN=$PIA_TOKEN" \\
-  echo "DIP_TOKEN=$DIP_TOKEN" \\
+  echo -e "$ ${green}PIA_PF=$PIA_PF PIA_TOKEN=<token>" \\
+  echo "DIP_TOKEN=<dip_token>" \\
   echo "WG_SERVER_IP=$dipAddress WG_HOSTNAME=$dipHostname" \\
   echo -e "./connect_to_wireguard_with_token.sh${nc}"
   echo
@@ -567,8 +567,8 @@ elif [[ $VPN_PROTOCOL == openvpn* ]]; then
   echo "The dedicated IP connection will be started with"
   echo -e "${green}VPN_PROTOCOL=$VPN_PROTOCOL${nc}, so we will automatically"
   echo "connect to OpenVPN, by running this command:"
-  echo -e "$ ${green}PIA_PF=$PIA_PF PIA_TOKEN=$PIA_TOKEN" \\
-  echo   "DIP_TOKEN=$DIP_TOKEN OVPN_SERVER_IP=$dipAddress" \\
+  echo -e "$ ${green}PIA_PF=$PIA_PF PIA_TOKEN=<token>" \\
+  echo   "DIP_TOKEN=<dip_token> OVPN_SERVER_IP=$dipAddress" \\
   echo   "OVPN_HOSTNAME=$dipHostname" \\
   echo   "CONNECTION_SETTINGS=$VPN_PROTOCOL" \\
   echo -e "./connect_to_openvpn_with_token.sh${nc}"

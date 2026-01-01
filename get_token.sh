@@ -93,7 +93,7 @@ echo
 token=$(echo "$generateTokenResponse" | jq -r '.token')
 tokenExpiration=$(timeout_timestamp)
 tokenLocation=/opt/piavpn-manual/token
-echo -e "PIA_TOKEN=$token${nc}"
+echo -e "Token retrieved successfully.${nc}"
 echo "$token" > "$tokenLocation" || exit 1
 echo "$tokenExpiration" >> "$tokenLocation"
 echo

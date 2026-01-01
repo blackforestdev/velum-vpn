@@ -244,7 +244,7 @@ To disconnect the VPN, run:
 # This section will stop the script if PIA_PF is not set to "true".
 if [[ $PIA_PF != "true" ]]; then
   echo "If you want to also enable port forwarding, you can start the script:"
-  echo -e "$ ${green}PIA_TOKEN=$PIA_TOKEN" \
+  echo -e "$ ${green}PIA_TOKEN=<token>" \
     "PF_GATEWAY=$gateway_ip" \
     "PF_HOSTNAME=$OVPN_HOSTNAME" \
     "./port_forwarding.sh${nc}"
