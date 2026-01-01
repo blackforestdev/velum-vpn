@@ -4,7 +4,7 @@ A hardened fork of [PIA manual-connections](https://github.com/pia-foss/manual-c
 
 ## Supported Platforms
 
-- **macOS** (tested)
+- **macOS** (fully tested)
 - **Linux/Debian** (in progress)
 
 ## What's Different
@@ -13,11 +13,16 @@ This fork addresses several issues with the upstream scripts:
 
 | Issue | Fix |
 |-------|-----|
+| No kill switch | pf firewall blocks traffic if VPN drops |
 | DNS leak on 10.0.0.x networks | Explicit route through VPN tunnel |
+| Token exposed in console output | Tokens redacted from all output |
+| Credentials in world-readable files | Restrictive permissions (700/600) |
 | Server mismatch (displayed ≠ connected) | Server list caching |
 | Geolocated servers (privacy concern) | Optional geo server filter |
 | Credentials in command history | Credential file support |
-| No connection validation | `pia-test` validator |
+| No connection validation | `pia-test` validator (16 security checks) |
+| Potential command injection (eval) | Safe home directory lookup |
+| No curl certificate enforcement | Dead-man switch for insecure flags |
 
 ## Quick Start
 
@@ -31,19 +36,40 @@ sudo ./run_setup.sh
 
 ### `pia-test` - Connection Validator
 
-Verifies VPN connection security:
+Comprehensive VPN security verification:
 
 ```bash
 sudo ./pia-test
 ```
 
-Tests performed:
-- WireGuard interface status and handshake
-- Public IP verification (checks against known PIA providers)
-- DNS leak detection
-- Route table validation
-- Traffic connectivity
-- Potential leak sources (IPv6, remote access tools)
+**Tests performed (16 checks):**
+
+| Test | Description |
+|------|-------------|
+| WireGuard Interface | Interface status, handshake, AllowedIPs |
+| Handshake Freshness | Warns if handshake is stale |
+| Public IP Check | Verifies IP belongs to known VPN provider |
+| DNS Leak Test | Tests nslookup, dig, host through PIA DNS |
+| DNS Route | Verifies DNS routed through VPN tunnel |
+| Route Table | Confirms 0.0.0.0/1 and 128.0.0.0/1 via VPN |
+| Traffic Test | Ping and HTTPS connectivity |
+| MTU Test | Large packet (1400 byte) verification |
+| Kill Switch | Verifies pf firewall rules active |
+| IPv6 Leak | Checks all interfaces for IPv6 |
+| Remote Access | Detects potential leak processes |
+| WebRTC | Reminder for browser-level check |
+| Port Forwarding | Status of port forwarding process |
+| Reconnection | Shows available reconnection method |
+
+### `pia-killswitch.sh` - Kill Switch Manager
+
+Standalone kill switch control:
+
+```bash
+sudo ./pia-killswitch.sh status   # Check status
+sudo ./pia-killswitch.sh enable --vpn-ip <IP> --lan-policy detect
+sudo ./pia-killswitch.sh disable
+```
 
 ## Configuration
 
@@ -97,6 +123,7 @@ The kill switch blocks ALL internet traffic if the VPN connection drops, prevent
 - Blocks all traffic except through the VPN tunnel
 - Auto-detects your local subnet for LAN access
 - Sends macOS notification if VPN drops unexpectedly
+- Automatically enabled/disabled via WireGuard PostUp/PostDown
 
 ### LAN Policies
 
@@ -166,6 +193,8 @@ sudo sysctl -w net.ipv6.conf.default.disable_ipv6=1
 
 If your local network uses 10.0.0.0/24, PIA's DNS (10.0.0.243) may route locally instead of through the VPN. This fork automatically adds an explicit route through the tunnel.
 
+**Note:** PIA's use of 10.0.0.x for internal DNS is problematic for users with home networks in this range. We've implemented workarounds, but recommend PIA implement signed server lists with non-conflicting DNS IPs.
+
 ### Connect / Disconnect
 
 After initial setup, the WireGuard config is saved to `/etc/wireguard/pia.conf`. You can reconnect without re-running setup:
@@ -204,7 +233,8 @@ Port forwarding is enabled by default (`PIA_PF=true`). The forwarded port is dis
 | Script | Purpose |
 |--------|---------|
 | `run_setup.sh` | Interactive setup (prompts for options) |
-| `pia-test` | Connection security validator |
+| `pia-test` | Connection security validator (16 checks) |
+| `pia-killswitch.sh` | Kill switch management (enable/disable/status) |
 | `get_region.sh` | Server selection and latency testing |
 | `get_token.sh` | Authentication token retrieval |
 | `connect_to_wireguard_with_token.sh` | WireGuard connection |
@@ -213,13 +243,27 @@ Port forwarding is enabled by default (`PIA_PF=true`). The forwarded port is dis
 
 ## Security Considerations
 
-This fork improves security over upstream but is not bulletproof. Known limitations:
+### What This Fork Fixes
 
-- Tokens visible in process list during connection
-- Credentials in environment variables during session
-- No certificate pinning for auth endpoint
+- **Token exposure**: Tokens no longer printed to console
+- **File permissions**: All sensitive files use 600/700 permissions
+- **Command injection**: Replaced `eval` with safe alternatives
+- **Curl security**: Dead-man switch refuses to run if `-k`/`--insecure` flags detected
+- **Server list validation**: Basic sanity checks on API responses
 
-For maximum security, use the official PIA application.
+### Remaining Limitations
+
+- Credentials in environment variables during session (standard for shell scripts)
+- No certificate pinning for auth endpoint (would require PIA to publish pinned certs)
+- Server list not cryptographically signed (recommendation sent to PIA)
+
+### For Maximum Security
+
+For the highest security requirements, consider:
+- Using the official PIA application
+- Running in a dedicated VM or container
+- Enabling the kill switch with `block` LAN policy
+- Verifying WebRTC leaks in your browser at browserleaks.com/webrtc
 
 ## Upstream
 
