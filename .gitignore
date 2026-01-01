@@ -1,0 +1,13 @@
+# Credentials and secrets
+.pia_credentials
+*.credentials
+pia_gen_wg.sh
+
+# macOS
+.DS_Store
+
+# Claude Code
+.claude/
+
+# Runtime files
+/opt/piavpn-manual/

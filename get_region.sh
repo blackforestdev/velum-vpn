@@ -130,7 +130,16 @@ if [[ -z $VPN_PROTOCOL ]]; then
 fi
 
 # Get all region data
-all_region_data=$(curl -s "$serverlist_url" | head -1)
+# Cache the server list to ensure consistency between display and connection
+regionDataCache="/opt/piavpn-manual/regionData"
+if [[ -f "$regionDataCache" && "$VPN_PROTOCOL" != "no" ]]; then
+  # Reuse cached data for connection (ensures we connect to the displayed server)
+  all_region_data=$(cat "$regionDataCache")
+else
+  # Fetch fresh data and cache it
+  all_region_data=$(curl -s "$serverlist_url" | head -1)
+  echo "$all_region_data" > "$regionDataCache"
+fi
 
 # Set the region the user has specified
 selectedRegion=$PREFERRED_REGION
@@ -146,18 +155,33 @@ if [[ $selectedRegion == "none" ]]; then
   fi
 
   # Test one server from each region to get the closest region.
+  # Build jq filter based on user preferences
+  jq_filter='.regions[]'
+  filter_msg=""
+
   # If port forwarding is enabled, filter out regions that don't support it.
   if [[ $PIA_PF == "true" ]]; then
-    echo "Port Forwarding is enabled, non-PF servers excluded."
-    echo
-    summarized_region_data="$( echo "$all_region_data" |
-      jq -r '.regions[] | select(.port_forward==true) |
-      .servers.meta[0].ip+" "+.id+" "+.name+" "+(.geo|tostring)' )"
-  else
-    summarized_region_data="$( echo "$all_region_data" |
-    jq -r '.regions[] |
-    .servers.meta[0].ip+" "+.id+" "+.name+" "+(.geo|tostring)' )"
+    jq_filter="$jq_filter | select(.port_forward==true)"
+    filter_msg="Port Forwarding enabled"
   fi
+
+  # If geo servers are disabled, filter them out
+  if [[ $ALLOW_GEO_SERVERS == "false" ]]; then
+    jq_filter="$jq_filter | select(.geo==false)"
+    if [[ -n $filter_msg ]]; then
+      filter_msg="$filter_msg, Geo servers excluded"
+    else
+      filter_msg="Geo servers excluded"
+    fi
+  fi
+
+  if [[ -n $filter_msg ]]; then
+    echo "$filter_msg."
+    echo
+  fi
+
+  summarized_region_data="$( echo "$all_region_data" |
+    jq -r "$jq_filter | .servers.meta[0].ip+\" \"+.id+\" \"+.name+\" \"+(.geo|tostring)" )"
   echo -e Testing regions that respond \
     faster than "${green}$MAX_LATENCY${nc}" seconds:
   selectedRegion="$(echo "$summarized_region_data" |
@@ -241,8 +265,9 @@ if [[ $VPN_PROTOCOL == "wireguard" ]]; then
   echo -e "PIA_PF=$PIA_PF ./connect_to_wireguard_with_token.sh${nc}"
   echo
   PIA_PF=$PIA_PF PIA_TOKEN=$PIA_TOKEN WG_SERVER_IP=$bestServer_WG_IP \
-    WG_HOSTNAME=$bestServer_WG_hostname ./connect_to_wireguard_with_token.sh
-  rm -f /opt/piavpn-manual/latencyList
+    WG_HOSTNAME=$bestServer_WG_hostname \
+    ./connect_to_wireguard_with_token.sh
+  rm -f /opt/piavpn-manual/latencyList /opt/piavpn-manual/regionData
   exit 0
 fi
 
@@ -268,6 +293,6 @@ if [[ $VPN_PROTOCOL == openvpn* ]]; then
     OVPN_HOSTNAME=$serverHostname \
     CONNECTION_SETTINGS=$VPN_PROTOCOL \
     ./connect_to_openvpn_with_token.sh
-  rm -f /opt/piavpn-manual/latencyList
+  rm -f /opt/piavpn-manual/latencyList /opt/piavpn-manual/regionData
   exit 0
 fi

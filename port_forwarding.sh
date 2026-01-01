@@ -83,12 +83,53 @@ fi
 # in the env var PAYLOAD_AND_SIGNATURE, and that will be used instead.
 if [[ -z $PAYLOAD_AND_SIGNATURE ]]; then
   echo
-  echo -n "Getting new signature... "
-  payload_and_signature="$(curl -s -m 5 \
-    --connect-to "$PF_HOSTNAME::$PF_GATEWAY:" \
-    --cacert "ca.rsa.4096.crt" \
-    -G --data-urlencode "token=${PIA_TOKEN}" \
-    "https://${PF_HOSTNAME}:19999/getSignature")"
+  # Detect the WireGuard interface name (utunX on macOS)
+  if [[ "$(uname)" == "Darwin" ]]; then
+    # On macOS, wireguard-go creates utunX interfaces
+    wg_interface=$(ifconfig | grep -B1 "inet 10\." | grep "^utun" | head -1 | cut -d: -f1)
+    if [[ -z "$wg_interface" ]]; then
+      # Fallback: try to find interface from routing table
+      wg_interface=$(netstat -rn | grep "^0/1" | awk '{print $NF}' | grep utun | head -1)
+    fi
+  else
+    wg_interface="pia"
+  fi
+
+  max_retries=3
+  retry_delay=3
+  for ((attempt=1; attempt<=max_retries; attempt++)); do
+    echo -n "Getting new signature (attempt $attempt/$max_retries)... "
+
+    # Try using VPN interface to reach WG server directly
+    if [[ -n "$wg_interface" && -n "$WG_SERVER_IP" ]]; then
+      curl_output=$(curl -s -m 10 -w "\nHTTP_CODE:%{http_code}" \
+        --interface "$wg_interface" \
+        --connect-to "$PF_HOSTNAME::$WG_SERVER_IP:" \
+        --cacert "ca.rsa.4096.crt" \
+        -G --data-urlencode "token=${PIA_TOKEN}" \
+        "https://${PF_HOSTNAME}:19999/getSignature" 2>&1)
+    else
+      # Fallback to PF_GATEWAY
+      curl_output=$(curl -s -m 10 -w "\nHTTP_CODE:%{http_code}" \
+        --connect-to "$PF_HOSTNAME::$PF_GATEWAY:" \
+        --cacert "ca.rsa.4096.crt" \
+        -G --data-urlencode "token=${PIA_TOKEN}" \
+        "https://${PF_HOSTNAME}:19999/getSignature" 2>&1)
+    fi
+
+    http_code=$(echo "$curl_output" | grep "HTTP_CODE:" | cut -d: -f2)
+    payload_and_signature=$(echo "$curl_output" | grep -v "HTTP_CODE:")
+
+    if [[ $(echo "$payload_and_signature" | jq -r '.status' 2>/dev/null) == "OK" ]]; then
+      echo -e "${green}OK!${nc}"
+      break
+    fi
+
+    echo -e "${red}Failed${nc}"
+    if [[ $attempt -lt $max_retries ]]; then
+      sleep $retry_delay
+    fi
+  done
 else
   payload_and_signature=$PAYLOAD_AND_SIGNATURE
   echo -n "Checking the payload_and_signature from the env var... "
@@ -99,6 +140,8 @@ export payload_and_signature
 # If they are not OK, just stop the script.
 if [[ $(echo "$payload_and_signature" | jq -r '.status') != "OK" ]]; then
   echo -e "${red}The payload_and_signature variable does not contain an OK status.${nc}"
+  echo -e "${red}Response received: $payload_and_signature${nc}"
+  echo -e "${red}This may indicate the token has expired, or the server does not support port forwarding.${nc}"
   exit 1
 fi
 echo -e "${green}OK!${nc}"
@@ -130,13 +173,24 @@ Trying to bind the port... "
 # We will repeat this request every 15 minutes, in order to keep the port
 # alive. The servers have no mechanism to track your activity, so they
 # will just delete the port forwarding if you don't send keepalives.
+# Use VPN interface to reach the WG server we're connected to
 while true; do
-  bind_port_response="$(curl -Gs -m 5 \
-    --connect-to "$PF_HOSTNAME::$PF_GATEWAY:" \
-    --cacert "ca.rsa.4096.crt" \
-    --data-urlencode "payload=${payload}" \
-    --data-urlencode "signature=${signature}" \
-    "https://${PF_HOSTNAME}:19999/bindPort")"
+  if [[ -n "$wg_interface" && -n "$WG_SERVER_IP" ]]; then
+    bind_port_response="$(curl -Gs -m 5 \
+      --interface "$wg_interface" \
+      --connect-to "$PF_HOSTNAME::$WG_SERVER_IP:" \
+      --cacert "ca.rsa.4096.crt" \
+      --data-urlencode "payload=${payload}" \
+      --data-urlencode "signature=${signature}" \
+      "https://${PF_HOSTNAME}:19999/bindPort")"
+  else
+    bind_port_response="$(curl -Gs -m 5 \
+      --connect-to "$PF_HOSTNAME::$PF_GATEWAY:" \
+      --cacert "ca.rsa.4096.crt" \
+      --data-urlencode "payload=${payload}" \
+      --data-urlencode "signature=${signature}" \
+      "https://${PF_HOSTNAME}:19999/bindPort")"
+  fi
     echo -e "${green}OK!${nc}"
 
     # If port did not bind, just exit the script.
@@ -148,7 +202,13 @@ while true; do
     fi
     echo -e Forwarded port'\t'"${green}$port${nc}"
     echo -e Refreshed on'\t'"${green}$(date)${nc}"
-    echo -e Expires on'\t'"${red}$(date --date="$expires_at")${nc}"
+    # macOS date doesn't support --date, use -jf for parsing ISO8601 format
+    if [[ "$(uname)" == "Darwin" ]]; then
+      expires_formatted=$(date -jf "%Y-%m-%dT%H:%M:%S" "${expires_at%%.*}" "+%c" 2>/dev/null || echo "$expires_at")
+    else
+      expires_formatted=$(date --date="$expires_at" 2>/dev/null || echo "$expires_at")
+    fi
+    echo -e Expires on'\t'"${red}$expires_formatted${nc}"
     echo -e "\n${green}This script will need to remain active to use port forwarding, and will refresh every 15 minutes.${nc}\n"
 
     # sleep 15 minutes

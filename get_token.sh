@@ -35,7 +35,13 @@ check_tool jq
 
 # This function creates a timestamp, to use for setting $TOKEN_EXPIRATION
 timeout_timestamp() {
-  date +"%c" --date='1 day' # Timestamp 24 hours
+  if [[ "$(uname)" == "Darwin" ]]; then
+    # macOS: use -v for relative date adjustment
+    date -v+1d +"%c"
+  else
+    # Linux: use --date for relative date adjustment
+    date +"%c" --date='1 day'
+  fi
 }
 
 # Check if terminal allows output, if yes, define colors for output

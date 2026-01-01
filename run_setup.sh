@@ -44,7 +44,33 @@ if (( EUID != 0 )); then
 fi
 
 # Erase previous authentication token if present
-rm -f /opt/piavpn-manual/token /opt/piavpn-manual/latencyList
+rm -f /opt/piavpn-manual/token /opt/piavpn-manual/latencyList /opt/piavpn-manual/regionData
+
+# Check for credentials file (~/.pia_credentials)
+# Format: two lines - username on first line, password on second
+# Use SUDO_USER's home if running via sudo, otherwise current user's home
+if [[ -n $SUDO_USER ]]; then
+  PIA_CREDS_FILE="$(eval echo ~$SUDO_USER)/.pia_credentials"
+else
+  PIA_CREDS_FILE="$HOME/.pia_credentials"
+fi
+if [[ -z $PIA_USER || -z $PIA_PASS ]]; then
+  if [[ -f "$PIA_CREDS_FILE" ]]; then
+    # Check file permissions (should be 600 or more restrictive)
+    file_perms=$(stat -f "%Lp" "$PIA_CREDS_FILE" 2>/dev/null || stat -c "%a" "$PIA_CREDS_FILE" 2>/dev/null)
+    if [[ "$file_perms" != "600" && "$file_perms" != "400" ]]; then
+      echo -e "${red}Warning: $PIA_CREDS_FILE has insecure permissions ($file_perms).${nc}"
+      echo -e "${red}Run: chmod 600 $PIA_CREDS_FILE${nc}"
+      echo
+    fi
+    PIA_USER=$(sed -n '1p' "$PIA_CREDS_FILE")
+    PIA_PASS=$(sed -n '2p' "$PIA_CREDS_FILE")
+    if [[ -n $PIA_USER && -n $PIA_PASS ]]; then
+      echo -e "Using credentials from ${green}$PIA_CREDS_FILE${nc}"
+      echo
+    fi
+  fi
+fi
 
 # Retry login if no token is generated
 while :; do
@@ -188,7 +214,7 @@ fi
 echo
 
 # Erase previous connection details if present
-rm -f /opt/piavpn-manual/token /opt/piavpn-manual/latencyList
+rm -f /opt/piavpn-manual/token /opt/piavpn-manual/latencyList /opt/piavpn-manual/regionData
 
 # Prompt for port forwarding if no DIP or DIP allows it
 if [[ $pfOption = "false" ]]; then
@@ -226,13 +252,27 @@ else
   echo -e "The variable ${green}DISABLE_IPV6=$DISABLE_IPV6${nc}, does not start with 'n' for 'no'.
 ${green}Defaulting to yes.${nc}
 "
-  sysctl -w net.ipv6.conf.all.disable_ipv6=1
-  sysctl -w net.ipv6.conf.default.disable_ipv6=1
-  echo
-  echo -e "${red}IPv6 has been disabled${nc}, you can ${green}enable it again with: "
-  echo "sysctl -w net.ipv6.conf.all.disable_ipv6=0"
-  echo "sysctl -w net.ipv6.conf.default.disable_ipv6=0"
-  echo -e "${nc}"
+  if [[ "$(uname)" == "Darwin" ]]; then
+    # macOS: disable IPv6 using networksetup for each network service
+    echo "Disabling IPv6 on all network services..."
+    while IFS= read -r service; do
+      networksetup -setv6off "$service" 2>/dev/null && echo "  Disabled IPv6 on: $service"
+    done < <(networksetup -listallnetworkservices | tail -n +2)
+    echo
+    echo -e "${red}IPv6 has been disabled${nc}, you can ${green}enable it again with: "
+    echo "networksetup -setv6automatic \"Wi-Fi\""
+    echo "networksetup -setv6automatic \"Ethernet\""
+    echo -e "${nc}"
+  else
+    # Linux: use sysctl
+    sysctl -w net.ipv6.conf.all.disable_ipv6=1
+    sysctl -w net.ipv6.conf.default.disable_ipv6=1
+    echo
+    echo -e "${red}IPv6 has been disabled${nc}, you can ${green}enable it again with: "
+    echo "sysctl -w net.ipv6.conf.all.disable_ipv6=0"
+    echo "sysctl -w net.ipv6.conf.default.disable_ipv6=0"
+    echo -e "${nc}"
+  fi
 fi
 
 # Only prompt for server selection if no DIP has been specified
@@ -297,6 +337,25 @@ if [[ -z $DIP_TOKEN ]]; then
   "
         else
           latencyInput=$MAX_LATENCY
+        fi
+
+        # Ask about geolocated servers
+        if [[ -z $ALLOW_GEO_SERVERS ]]; then
+          echo
+          echo "Geolocated servers are physically located in a different country than"
+          echo "advertised. This may have privacy/legal implications for some users."
+          echo -n "Allow geolocated servers in the list? ([Y]es/[n]o): "
+          read -r geoChoice
+          echo
+          if echo "${geoChoice:0:1}" | grep -iq n; then
+            ALLOW_GEO_SERVERS="false"
+          else
+            ALLOW_GEO_SERVERS="true"
+          fi
+        fi
+        export ALLOW_GEO_SERVERS
+        if [[ $ALLOW_GEO_SERVERS == "false" ]]; then
+          echo -e "${green}Geolocated servers will be excluded.${nc}"
         fi
 
         # Assure that input is numeric and properly formatted.
@@ -440,14 +499,29 @@ export VPN_PROTOCOL
 echo -e "${green}VPN_PROTOCOL=$VPN_PROTOCOL
 ${nc}"
 
-# Check for the required presence of resolvconf for setting DNS on wireguard connections
+# Check for the required presence of DNS tools for setting DNS on wireguard connections
+# On Linux, resolvconf is used; on macOS, wg-quick uses networksetup/scutil natively
 setDNS="yes"
-if ! command -v resolvconf &>/dev/null && [[ $VPN_PROTOCOL == "wireguard" ]]; then
-  echo -e "${red}The resolvconf package could not be found."
-  echo "This script can not set DNS for you and you will"
-  echo -e "need to invoke DNS protection some other way.${nc}"
-  echo
-  setDNS="no"
+if [[ $VPN_PROTOCOL == "wireguard" ]]; then
+  if [[ "$(uname)" == "Darwin" ]]; then
+    # macOS: wg-quick handles DNS via networksetup/scutil, no resolvconf needed
+    if ! command -v networksetup &>/dev/null; then
+      echo -e "${red}networksetup could not be found."
+      echo "This script can not set DNS for you and you will"
+      echo -e "need to invoke DNS protection some other way.${nc}"
+      echo
+      setDNS="no"
+    fi
+  else
+    # Linux: requires resolvconf
+    if ! command -v resolvconf &>/dev/null; then
+      echo -e "${red}The resolvconf package could not be found."
+      echo "This script can not set DNS for you and you will"
+      echo -e "need to invoke DNS protection some other way.${nc}"
+      echo
+      setDNS="no"
+    fi
+  fi
 fi
 
 # Check for in-line definition of PIA_DNS and prompt for input

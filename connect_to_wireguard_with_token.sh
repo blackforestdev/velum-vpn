@@ -58,7 +58,16 @@ DEFAULT_PIA_CONF_PATH=/etc/wireguard/pia.conf
 # connection does not leak, it is best to disabled IPv6 altogether.
 # IPv6 can also be disabled via kernel commandline param, so we must
 # first check if this is the case.
-if [[ -f /proc/net/if_inet6 ]] &&
+if [[ "$(uname)" == "Darwin" ]]; then
+  # macOS: check if any interface has IPv6 enabled
+  if networksetup -listallnetworkservices 2>/dev/null | tail -n +2 | while read -r svc; do
+    networksetup -getinfo "$svc" 2>/dev/null | grep -q "IPv6: Automatic" && exit 0
+  done; then
+    echo -e "${red}You should consider disabling IPv6 by running:"
+    echo "networksetup -setv6off \"Wi-Fi\""
+    echo -e "networksetup -setv6off \"Ethernet\"${nc}"
+  fi
+elif [[ -f /proc/net/if_inet6 ]] &&
   [[ $(sysctl -n net.ipv6.conf.all.disable_ipv6) -ne 1 ||
      $(sysctl -n net.ipv6.conf.default.disable_ipv6) -ne 1 ]]
 then
@@ -143,25 +152,40 @@ fi
 # require it.
 if [[ $PIA_DNS == "true" ]]; then
   dnsServer=$(echo "$wireguard_json" | jq -r '.dns_servers[0]')
-  echo "Trying to set up DNS to $dnsServer. In case you do not have resolvconf,"
-  echo "this operation will fail and you will not get a VPN. If you have issues,"
-  echo "start this script without PIA_DNS."
+  if [[ "$(uname)" == "Darwin" ]]; then
+    echo "Trying to set up DNS to $dnsServer using macOS networksetup."
+  else
+    echo "Trying to set up DNS to $dnsServer. In case you do not have resolvconf,"
+    echo "this operation will fail and you will not get a VPN. If you have issues,"
+    echo "start this script without PIA_DNS."
+  fi
   echo
   dnsSettingForVPN="DNS = $dnsServer"
 fi
 echo -n "Trying to write ${PIA_CONF_PATH}..."
 mkdir -p "$(dirname "$PIA_CONF_PATH")"
+# Create config file with restrictive permissions (private key inside)
+umask 077
+# Build PostUp command for DNS route fix (macOS only)
+postUpCmd=""
+if [[ "$(uname)" == "Darwin" && -n "$dnsServer" ]]; then
+  # Add route for PIA DNS through VPN interface on reconnect
+  postUpCmd="PostUp = route -q -n add -host $dnsServer -interface %i 2>/dev/null || true"
+fi
+
 echo "
 [Interface]
 Address = $(echo "$wireguard_json" | jq -r '.peer_ip')
 PrivateKey = $privKey
 $dnsSettingForVPN
+$postUpCmd
 [Peer]
 PersistentKeepalive = 25
 PublicKey = $(echo "$wireguard_json" | jq -r '.server_key')
 AllowedIPs = 0.0.0.0/0
 Endpoint = ${WG_SERVER_IP}:$(echo "$wireguard_json" | jq -r '.server_port')
 " > ${PIA_CONF_PATH} || exit 1
+chmod 600 ${PIA_CONF_PATH}
 echo -e "${green}OK!${nc}"
 
 
@@ -173,6 +197,19 @@ if [[ $PIA_CONNECT == "true" ]]; then
   echo
   echo "Trying to create the wireguard interface..."
   wg-quick up pia || exit 1
+
+  # Fix DNS routing conflict: PIA's DNS (10.0.0.243) may be in the same
+  # subnet as the user's local network, causing DNS to route locally
+  # instead of through the VPN tunnel. Add explicit route through tunnel.
+  if [[ "$(uname)" == "Darwin" ]]; then
+    # Find the WireGuard interface (utunX on macOS)
+    wg_iface=$(netstat -rn | grep "^0/1" | awk '{print $NF}' | head -1)
+    if [[ -n "$wg_iface" && -n "$dnsServer" ]]; then
+      echo "Adding route for PIA DNS ($dnsServer) through $wg_iface..."
+      route -q -n add -host "$dnsServer" -interface "$wg_iface" 2>/dev/null || true
+    fi
+  fi
+
   echo
   echo -e "${green}The WireGuard interface got created.${nc}
 
@@ -206,14 +243,18 @@ if [[ $PIA_CONNECT == "true" ]]; then
   echo
   echo
 
+  # Use WG_SERVER_IP for port forwarding - we bind to VPN interface to bypass the route table
+  PF_GW="$WG_SERVER_IP"
+
   echo -e "Starting procedure to enable port forwarding by running the following command:
   $ ${green}PIA_TOKEN=$PIA_TOKEN \\
-    PF_GATEWAY=$WG_SERVER_IP \\
+    PF_GATEWAY=$PF_GW \\
     PF_HOSTNAME=$WG_HOSTNAME \\
     ./port_forwarding.sh${nc}"
 
   PIA_TOKEN=$PIA_TOKEN \
-    PF_GATEWAY=$WG_SERVER_IP \
+    PF_GATEWAY=$PF_GW \
     PF_HOSTNAME=$WG_HOSTNAME \
+    WG_SERVER_IP=$WG_SERVER_IP \
     ./port_forwarding.sh
 fi

@@ -1,0 +1,236 @@
+#!/usr/bin/env bash
+# PIA VPN Connection Validator
+# Run this while connected to verify no leaks
+
+set -uo pipefail
+
+# Colors
+if [[ -t 1 ]]; then
+  RED=$(tput setaf 1)
+  GREEN=$(tput setaf 2)
+  YELLOW=$(tput setaf 3)
+  BLUE=$(tput setaf 4)
+  NC=$(tput sgr0)
+else
+  RED='' GREEN='' YELLOW='' BLUE='' NC=''
+fi
+
+PASS="${GREEN}PASS${NC}"
+FAIL="${RED}FAIL${NC}"
+WARN="${YELLOW}WARN${NC}"
+
+echo "${BLUE}═══════════════════════════════════════════════════════════════${NC}"
+echo "${BLUE}                 PIA VPN Connection Validator                   ${NC}"
+echo "${BLUE}═══════════════════════════════════════════════════════════════${NC}"
+echo ""
+
+# Track overall status
+TESTS_PASSED=0
+TESTS_FAILED=0
+TESTS_WARNED=0
+
+# --- Test 1: WireGuard Interface ---
+echo "${BLUE}[1] WireGuard Interface${NC}"
+
+wg_output=$(sudo wg show 2>/dev/null)
+if [[ -z "$wg_output" ]]; then
+  echo "    Status:     $FAIL - No WireGuard interface found"
+  ((TESTS_FAILED++))
+else
+  wg_iface=$(echo "$wg_output" | grep "^interface:" | awk '{print $2}')
+  echo "    Interface:  ${GREEN}$wg_iface${NC}"
+
+  # Check handshake
+  handshake=$(echo "$wg_output" | grep "latest handshake:" | sed 's/.*latest handshake: //')
+  if [[ -n "$handshake" ]]; then
+    echo "    Handshake:  ${GREEN}$handshake${NC}"
+    ((TESTS_PASSED++))
+  else
+    echo "    Handshake:  $FAIL - No handshake (tunnel may not be working)"
+    ((TESTS_FAILED++))
+  fi
+
+  # Check transfer
+  transfer=$(echo "$wg_output" | grep "transfer:" | sed 's/.*transfer: //')
+  if [[ -n "$transfer" ]]; then
+    echo "    Transfer:   ${GREEN}$transfer${NC}"
+  fi
+
+  # Check endpoint
+  endpoint=$(echo "$wg_output" | grep "endpoint:" | awk '{print $2}')
+  if [[ -n "$endpoint" ]]; then
+    echo "    Endpoint:   ${GREEN}$endpoint${NC}"
+  fi
+fi
+echo ""
+
+# --- Test 2: Public IP Check ---
+echo "${BLUE}[2] Public IP Check${NC}"
+
+# Get public IP from multiple sources
+ip_ipify=$(curl -s --max-time 5 https://api.ipify.org 2>/dev/null)
+ip_icanhazip=$(curl -s --max-time 5 https://icanhazip.com 2>/dev/null | tr -d '[:space:]')
+
+if [[ -n "$ip_ipify" ]]; then
+  echo "    ipify.org:  ${GREEN}$ip_ipify${NC}"
+
+  # Check if it's a PIA IP (M247/PIA ranges)
+  ip_info=$(curl -s --max-time 5 "https://ipinfo.io/$ip_ipify/json" 2>/dev/null)
+  if [[ -n "$ip_info" ]]; then
+    org=$(echo "$ip_info" | grep -o '"org": *"[^"]*"' | cut -d'"' -f4)
+    city=$(echo "$ip_info" | grep -o '"city": *"[^"]*"' | cut -d'"' -f4)
+    country=$(echo "$ip_info" | grep -o '"country": *"[^"]*"' | cut -d'"' -f4)
+    echo "    Location:   ${GREEN}$city, $country${NC}"
+    echo "    ISP:        ${GREEN}$org${NC}"
+
+    # PIA uses various datacenter providers worldwide
+    if [[ "$org" == *"M247"* ]] || [[ "$org" == *"PIA"* ]] || [[ "$org" == *"Private Internet Access"* ]] || \
+       [[ "$org" == *"Glesys"* ]] || [[ "$org" == *"Privex"* ]] || [[ "$org" == *"Quadranet"* ]] || \
+       [[ "$org" == *"Cogent"* ]] || [[ "$org" == *"Leaseweb"* ]] || [[ "$org" == *"Datacamp"* ]]; then
+      echo "    VPN IP:     $PASS - Detected as VPN/datacenter IP"
+      ((TESTS_PASSED++))
+    else
+      echo "    VPN IP:     $WARN - ISP not recognized as known PIA provider"
+      ((TESTS_WARNED++))
+    fi
+  fi
+else
+  echo "    ipify.org:  $FAIL - Could not retrieve public IP"
+  ((TESTS_FAILED++))
+fi
+
+if [[ -n "$ip_icanhazip" && "$ip_icanhazip" != "$ip_ipify" ]]; then
+  echo "    icanhazip:  ${YELLOW}$ip_icanhazip${NC} (differs from ipify!)"
+  ((TESTS_WARNED++))
+fi
+echo ""
+
+# --- Test 3: DNS Leak Test ---
+echo "${BLUE}[3] DNS Leak Test${NC}"
+
+# Check configured DNS
+dns_servers=$(scutil --dns 2>/dev/null | grep "nameserver\[" | head -5 | awk '{print $3}' | sort -u | tr '\n' ' ')
+echo "    Configured: ${GREEN}${dns_servers:-None}${NC}"
+
+# Test DNS resolution through specific server
+dns_test=$(nslookup -timeout=3 google.com 10.0.0.243 2>/dev/null)
+if [[ $? -eq 0 ]]; then
+  echo "    PIA DNS:    $PASS - Resolving through 10.0.0.243"
+  ((TESTS_PASSED++))
+else
+  echo "    PIA DNS:    $FAIL - Cannot resolve through PIA DNS"
+  ((TESTS_FAILED++))
+fi
+
+# Check if DNS route is through tunnel
+dns_route=$(netstat -rn 2>/dev/null | grep "^10.0.0.243")
+if [[ "$dns_route" == *"utun"* ]]; then
+  echo "    DNS Route:  $PASS - Routed through VPN tunnel"
+  ((TESTS_PASSED++))
+else
+  echo "    DNS Route:  $WARN - May be routed locally (check: netstat -rn | grep 10.0.0.243)"
+  ((TESTS_WARNED++))
+fi
+echo ""
+
+# --- Test 4: Route Table Check ---
+echo "${BLUE}[4] Route Table Check${NC}"
+
+# Check for VPN routes
+route_0=$(netstat -rn 2>/dev/null | grep "^0/1.*utun")
+route_128=$(netstat -rn 2>/dev/null | grep "^128.0/1.*utun")
+
+if [[ -n "$route_0" && -n "$route_128" ]]; then
+  echo "    0.0.0.0/1:  $PASS - Routed through VPN"
+  echo "    128.0.0.0/1: $PASS - Routed through VPN"
+  ((TESTS_PASSED++))
+else
+  echo "    VPN Routes: $FAIL - Default routes not through VPN"
+  ((TESTS_FAILED++))
+fi
+
+# Check bypass route exists (for WG endpoint)
+bypass_route=$(netstat -rn 2>/dev/null | grep "91.90.126" | head -1)
+if [[ -n "$bypass_route" ]]; then
+  bypass_gw=$(echo "$bypass_route" | awk '{print $2}')
+  echo "    Bypass:     $PASS - WG endpoint via $bypass_gw"
+  ((TESTS_PASSED++))
+fi
+echo ""
+
+# --- Test 5: Traffic Test ---
+echo "${BLUE}[5] Traffic Test${NC}"
+
+# Ping test through tunnel
+ping_result=$(ping -c 3 -W 2 1.1.1.1 2>/dev/null)
+if [[ $? -eq 0 ]]; then
+  ping_time=$(echo "$ping_result" | grep "avg" | awk -F'/' '{print $5}')
+  echo "    Ping 1.1.1.1: $PASS - ${ping_time}ms avg"
+  ((TESTS_PASSED++))
+else
+  echo "    Ping 1.1.1.1: $FAIL - No response"
+  ((TESTS_FAILED++))
+fi
+
+# HTTP test
+http_test=$(curl -s --max-time 5 -o /dev/null -w "%{http_code}" https://www.google.com 2>/dev/null)
+if [[ "$http_test" =~ ^[23] ]]; then
+  echo "    HTTPS:      $PASS - Google responded $http_test"
+  ((TESTS_PASSED++))
+else
+  echo "    HTTPS:      $FAIL - HTTP code: $http_test"
+  ((TESTS_FAILED++))
+fi
+echo ""
+
+# --- Test 6: Potential Leak Sources ---
+echo "${BLUE}[6] Potential Leak Sources${NC}"
+
+# Check for IPv6
+ipv6_enabled=0
+if [[ "$(networksetup -getinfo Wi-Fi 2>/dev/null | grep 'IPv6:')" == *"Automatic"* ]]; then
+  echo "    IPv6 Wi-Fi: $WARN - IPv6 enabled (potential leak)"
+  ipv6_enabled=1
+  ((TESTS_WARNED++))
+fi
+
+if [[ $ipv6_enabled -eq 0 ]]; then
+  echo "    IPv6:       $PASS - Disabled"
+  ((TESTS_PASSED++))
+fi
+
+# Check for known leak processes
+leak_procs=""
+for proc in "AnyDesk" "TeamViewer" "Chrome Remote Desktop"; do
+  if pgrep -i "$proc" >/dev/null 2>&1; then
+    leak_procs="$leak_procs $proc"
+  fi
+done
+
+if [[ -n "$leak_procs" ]]; then
+  echo "    Remote:     $WARN - Found:$leak_procs"
+  ((TESTS_WARNED++))
+else
+  echo "    Remote:     $PASS - No remote access tools detected"
+  ((TESTS_PASSED++))
+fi
+echo ""
+
+# --- Summary ---
+echo "${BLUE}═══════════════════════════════════════════════════════════════${NC}"
+echo "${BLUE}                          SUMMARY                               ${NC}"
+echo "${BLUE}═══════════════════════════════════════════════════════════════${NC}"
+echo ""
+echo "    ${GREEN}PASSED:${NC}  $TESTS_PASSED"
+echo "    ${YELLOW}WARNED:${NC}  $TESTS_WARNED"
+echo "    ${RED}FAILED:${NC}  $TESTS_FAILED"
+echo ""
+
+if [[ $TESTS_FAILED -eq 0 && $TESTS_WARNED -eq 0 ]]; then
+  echo "    ${GREEN}VPN connection appears secure.${NC}"
+elif [[ $TESTS_FAILED -eq 0 ]]; then
+  echo "    ${YELLOW}VPN connected with warnings - review above.${NC}"
+else
+  echo "    ${RED}VPN connection has issues - review failures above.${NC}"
+fi
+echo ""
