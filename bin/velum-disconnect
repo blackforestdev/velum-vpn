@@ -16,6 +16,9 @@ export VELUM_ROOT
 source "$VELUM_ROOT/lib/velum-core.sh"
 source "$VELUM_ROOT/lib/os/detect.sh"
 
+# WireGuard config path
+WG_CONF_PATH="/etc/wireguard/velum.conf"
+
 # ============================================================================
 # DISCONNECT
 # ============================================================================
@@ -35,7 +38,7 @@ stop_port_forwarding() {
 stop_wireguard() {
   log_info "Stopping WireGuard..."
 
-  if wg-quick down pia 2>/dev/null; then
+  if wg-quick down "$WG_CONF_PATH" 2>/dev/null; then
     print_ok "WireGuard interface stopped"
   else
     print_warn "WireGuard interface was not running"

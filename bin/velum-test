@@ -198,8 +198,8 @@ test_dns_leak() {
 
   # Get DNS from WireGuard config
   local vpn_dns=""
-  if [[ -f /etc/wireguard/pia.conf ]]; then
-    vpn_dns=$(grep "^DNS" /etc/wireguard/pia.conf 2>/dev/null | cut -d= -f2 | tr -d ' ')
+  if [[ -f /etc/wireguard/velum.conf ]]; then
+    vpn_dns=$(grep "^DNS" /etc/wireguard/velum.conf 2>/dev/null | cut -d= -f2 | tr -d ' ')
   fi
 
   # Get configured DNS (OS-specific)
@@ -658,9 +658,9 @@ test_reconnection() {
   echo "${BLUE}[10] Reconnection${NC}"
 
   local wg_config_found=false
-  for config_path in /etc/wireguard/pia.conf /usr/local/etc/wireguard/pia.conf; do
+  for config_path in /etc/wireguard/velum.conf /usr/local/etc/wireguard/velum.conf; do
     if sudo test -f "$config_path" 2>/dev/null; then
-      echo "    Quick:      ${GREEN}wg-quick up pia${NC}"
+      echo "    Quick:      ${GREEN}wg-quick up velum${NC}"
       echo "    Config:     ${GREEN}$config_path${NC}"
 
       # Show config age

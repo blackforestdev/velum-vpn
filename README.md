@@ -179,7 +179,8 @@ sudo velum test
 6. **Kill Switch**: Verifies firewall rules are active
 7. **Leak Sources**: IPv6, remote access tools, WebRTC warning
 8. **Port Forwarding**: Status if enabled
-9. **Reconnection Info**: Config age, quick reconnect command
+9. **VPN Detection Check**: Tests if IP is flagged by detection services
+10. **Reconnection Info**: Config age, quick reconnect command
 
 ### `velum killswitch`
 

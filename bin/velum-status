@@ -40,8 +40,8 @@ get_public_ip() {
 
 # Get VPN endpoint from WireGuard config
 get_vpn_endpoint() {
-  if [[ -f /etc/wireguard/pia.conf ]]; then
-    grep "^Endpoint" /etc/wireguard/pia.conf 2>/dev/null | awk -F'= ' '{print $2}' | cut -d: -f1
+  if [[ -f /etc/wireguard/velum.conf ]]; then
+    grep "^Endpoint" /etc/wireguard/velum.conf 2>/dev/null | awk -F'= ' '{print $2}' | cut -d: -f1
   fi
 }
 
@@ -100,7 +100,7 @@ show_status() {
     # WireGuard stats
     if command -v wg >/dev/null 2>&1; then
       local stats
-      stats=$(wg show pia 2>/dev/null || echo "")
+      stats=$(wg show velum 2>/dev/null || echo "")
       if [[ -n "$stats" ]]; then
         local rx tx handshake
         rx=$(echo "$stats" | grep "transfer:" | awk '{print $2, $3}')
