@@ -1,274 +1,449 @@
 # velum-vpn
 
-A hardened fork of [PIA manual-connections](https://github.com/pia-foss/manual-connections) with improved reliability, security, and usability.
+A security-focused, provider-agnostic VPN management suite for WireGuard.
 
-## Supported Platforms
+velum-vpn provides a unified command-line interface for connecting to multiple VPN providers with defense-in-depth security features including kill switch protection, IPv6 leak prevention, and DNS leak protection.
 
-- **macOS** (fully tested)
-- **Linux/Debian** (in progress)
+## Features
 
-## What's Different
+- **Provider Agnostic**: Support for multiple VPN providers (PIA, Mullvad) with a pluggable architecture
+- **WireGuard Only**: Modern, fast, and secure - no legacy OpenVPN support
+- **Kill Switch**: Firewall-based protection that blocks all traffic if VPN drops
+- **IPv6 Protection**: Blocks IPv6 at both interface and firewall level to prevent leaks
+- **DNS Leak Protection**: Routes DNS through VPN provider's servers
+- **Cross-Platform**: Full support for macOS and Linux
+- **XDG Compliant**: Configuration stored in `~/.config/velum/` following Linux standards
+- **Security Hardened**: TLS 1.2+ enforcement, credential cleanup, input validation
 
-This fork addresses several issues with the upstream scripts:
+## Supported Providers
 
-| Issue | Fix |
-|-------|-----|
-| No kill switch | pf firewall blocks traffic if VPN drops |
-| DNS leak on 10.0.0.x networks | Explicit route through VPN tunnel |
-| Token exposed in console output | Tokens redacted from all output |
-| Credentials in world-readable files | Restrictive permissions (700/600) |
-| Server mismatch (displayed ≠ connected) | Server list caching |
-| Geolocated servers (privacy concern) | Optional geo server filter |
-| Credentials in command history | Credential file support |
-| No connection validation | `pia-test` validator (16 security checks) |
-| Potential command injection (eval) | Safe home directory lookup |
-| No curl certificate enforcement | Dead-man switch for insecure flags |
+| Provider | Authentication | Port Forwarding | Dedicated IP |
+|----------|---------------|-----------------|--------------|
+| **PIA** (Private Internet Access) | Username + Password | Yes | Yes |
+| **Mullvad** | 16-digit Account Number | No (removed 2023) | No |
+
+## Requirements
+
+### All Platforms
+- `curl` - HTTP client
+- `jq` - JSON processor
+- `wireguard-tools` - WireGuard userspace tools (`wg`, `wg-quick`)
+
+### macOS
+- `wireguard-go` - WireGuard userspace implementation
+- Install via: `brew install wireguard-tools wireguard-go jq`
+
+### Linux
+- `iptables` or `nftables` - Firewall (for kill switch)
+- `iproute2` - Network utilities (`ip` command)
+- Kernel WireGuard module or `wireguard-go`
+
+## Installation
+
+```bash
+# Clone the repository
+git clone https://github.com/yourusername/velum-vpn.git
+cd velum-vpn
+
+# Add to PATH (optional)
+export PATH="$PATH:$(pwd)/bin"
+
+# Or create symlink
+sudo ln -s $(pwd)/bin/velum /usr/local/bin/velum
+```
 
 ## Quick Start
 
 ```bash
-git clone git@github.com:blackforestdev/velum-vpn.git
-cd velum-vpn
-sudo ./run_setup.sh
+# 1. Configure VPN (interactive wizard)
+velum config
+
+# 2. Connect to VPN (requires root)
+sudo velum connect
+
+# 3. Verify connection
+sudo velum test
+
+# 4. Check status
+velum status
+
+# 5. Disconnect
+sudo velum disconnect
 ```
 
-## Tools
+## Commands
 
-### `pia-test` - Connection Validator
+### `velum`
 
-Comprehensive VPN security verification:
+Main entry point. Dispatches to subcommands.
 
 ```bash
-sudo ./pia-test
+velum <command> [options]
+
+Commands:
+  config      Configure VPN settings interactively
+  connect     Connect to VPN
+  disconnect  Disconnect from VPN
+  status      Show connection status
+  test        Test VPN connection for leaks
+  killswitch  Manage kill switch
+
+Options:
+  -h, --help     Show help
+  -v, --version  Show version
 ```
 
-**Tests performed (16 checks):**
+### `velum config`
 
-| Test | Description |
-|------|-------------|
-| WireGuard Interface | Interface status, handshake, AllowedIPs |
-| Handshake Freshness | Warns if handshake is stale |
-| Public IP Check | Verifies IP belongs to known VPN provider |
-| DNS Leak Test | Tests nslookup, dig, host through PIA DNS |
-| DNS Route | Verifies DNS routed through VPN tunnel |
-| Route Table | Confirms 0.0.0.0/1 and 128.0.0.0/1 via VPN |
-| Traffic Test | Ping and HTTPS connectivity |
-| MTU Test | Large packet (1400 byte) verification |
-| Kill Switch | Verifies pf firewall rules active |
-| IPv6 Leak | Checks all interfaces for IPv6 |
-| Remote Access | Detects potential leak processes |
-| WebRTC | Reminder for browser-level check |
-| Port Forwarding | Status of port forwarding process |
-| Reconnection | Shows available reconnection method |
+Interactive configuration wizard with 5 phases:
 
-### `pia-killswitch.sh` - Kill Switch Manager
+1. **Provider Selection**: Choose VPN provider (PIA, Mullvad)
+2. **Authentication**: Enter credentials and authenticate
+3. **Security Profile**: Configure kill switch, IPv6, DNS settings
+4. **Connection Features**: Port forwarding, Dedicated IP (provider-dependent)
+5. **Server Selection**: Auto (lowest latency) or manual selection
 
-Standalone kill switch control:
+Configuration is saved to `~/.config/velum/velum.conf`.
 
 ```bash
-sudo ./pia-killswitch.sh status   # Check status
-sudo ./pia-killswitch.sh enable --vpn-ip <IP> --lan-policy detect
-sudo ./pia-killswitch.sh disable
+# Run configuration wizard
+velum config
+```
+
+### `velum connect`
+
+Establishes VPN connection using saved configuration.
+
+```bash
+# Connect to VPN
+sudo velum connect
+```
+
+**What it does:**
+1. Loads configuration from `~/.config/velum/velum.conf`
+2. Finds best server by latency (if auto mode)
+3. Generates WireGuard keypair
+4. Exchanges keys with provider API
+5. Creates WireGuard configuration
+6. Enables kill switch (if configured)
+7. Starts WireGuard interface
+8. Sets up port forwarding (if enabled)
+
+### `velum disconnect`
+
+Cleanly disconnects VPN and removes firewall rules.
+
+```bash
+# Disconnect from VPN
+sudo velum disconnect
+```
+
+**What it does:**
+1. Stops WireGuard interface
+2. Disables kill switch
+3. Stops port forwarding keepalive
+4. Optionally re-enables IPv6
+
+### `velum status`
+
+Shows current VPN connection status without requiring root.
+
+```bash
+# Check connection status
+velum status
+```
+
+**Output includes:**
+- Connection state (connected/disconnected)
+- VPN interface and public IP
+- Kill switch status
+- IPv6 status
+- DNS configuration
+- Authentication token validity
+
+### `velum test`
+
+Comprehensive VPN connection validator. Tests for leaks and issues.
+
+```bash
+# Run connection tests (requires root for some tests)
+sudo velum test
+```
+
+**Test categories:**
+1. **WireGuard Interface**: Handshake, transfer stats, allowed IPs
+2. **Public IP Check**: Verifies IP is from VPN provider
+3. **DNS Leak Test**: Tests DNS resolution through VPN
+4. **Route Table Check**: Verifies traffic routes through VPN
+5. **Traffic Test**: Ping, HTTPS, MTU tests
+6. **Kill Switch**: Verifies firewall rules are active
+7. **Leak Sources**: IPv6, remote access tools, WebRTC warning
+8. **Port Forwarding**: Status if enabled
+9. **Reconnection Info**: Config age, quick reconnect command
+
+### `velum killswitch`
+
+Manage kill switch independently.
+
+```bash
+# Enable kill switch
+sudo velum killswitch enable --vpn-ip <IP> --vpn-port <PORT> --vpn-iface <IFACE>
+
+# Disable kill switch
+sudo velum killswitch disable
+
+# Check status
+velum killswitch status
 ```
 
 ## Configuration
 
-### Credential File
+### Configuration File
 
-Create credentials file (two lines: username, then password):
+Location: `~/.config/velum/velum.conf`
 
-**Option 1 - Text editor (most secure):**
 ```bash
-nano ~/.pia_credentials
-# Enter username on line 1, password on line 2, save and exit
-chmod 600 ~/.pia_credentials
+# velum-vpn configuration
+
+# Provider
+CONFIG[provider]="pia"
+
+# Security
+CONFIG[killswitch]="true"
+CONFIG[killswitch_lan]="detect"
+CONFIG[ipv6_disabled]="true"
+CONFIG[use_provider_dns]="true"
+
+# Features
+CONFIG[dip_enabled]="false"
+CONFIG[dip_token]=""
+CONFIG[port_forward]="false"
+
+# Server
+CONFIG[allow_geo]="false"
+CONFIG[server_auto]="true"
+CONFIG[max_latency]="0.05"
+CONFIG[selected_region]=""
+CONFIG[selected_ip]=""
+CONFIG[selected_hostname]=""
 ```
 
-**Option 2 - Secure prompt (password hidden):**
-```bash
-read -p "Username: " user && read -sp "Password: " pass && printf "%s\n%s\n" "$user" "$pass" > ~/.pia_credentials && chmod 600 ~/.pia_credentials && unset user pass
-```
+### Token Storage
 
-**Warning:** Avoid using `echo` with passwords - they appear in shell history.
+Authentication tokens are stored in `~/.config/velum/tokens/` with mode 600.
 
 ### Environment Variables
 
 | Variable | Description | Default |
 |----------|-------------|---------|
-| `PIA_USER` | PIA username | - |
-| `PIA_PASS` | PIA password | - |
-| `VPN_PROTOCOL` | `wireguard` or `openvpn*` | prompted |
-| `PIA_PF` | Enable port forwarding | `true` |
-| `PIA_DNS` | Use PIA DNS servers | `true` |
-| `PIA_KILLSWITCH` | Enable kill switch | prompted |
-| `PIA_KILLSWITCH_LAN` | LAN policy: `block`, `detect`, or CIDR | `detect` |
-| `PREFERRED_REGION` | Region ID (e.g., `panama`) | auto-select |
-| `ALLOW_GEO_SERVERS` | Include geolocated servers | `true` |
-| `MAX_LATENCY` | Server response timeout (seconds) | `0.05` |
-| `DISABLE_IPV6` | Disable IPv6 | `yes` |
+| `XDG_CONFIG_HOME` | Base config directory | `~/.config` |
+| `VELUM_LOG_LEVEL` | Log verbosity (0-3) | `1` (INFO) |
 
-### One-liner Connection
+## Security Features
 
-```bash
-sudo PIA_USER=p1234567 PIA_PASS=xxx VPN_PROTOCOL=wireguard PIA_KILLSWITCH=true ./run_setup.sh
+### Kill Switch
+
+The kill switch uses the native firewall (pf on macOS, iptables/nftables on Linux) to block all traffic except:
+- Traffic through the VPN tunnel
+- Traffic to the VPN server endpoint
+- Local loopback traffic
+- Optionally: LAN traffic (configurable)
+
+If the VPN connection drops, all internet traffic is blocked until the VPN reconnects or the kill switch is disabled.
+
+### IPv6 Protection
+
+IPv6 is disabled at two levels:
+1. **Interface level**: IPv6 is disabled on network interfaces
+2. **Firewall level**: All IPv6 traffic is blocked by kill switch rules
+
+This prevents IPv6 leaks that could expose your real IP address.
+
+### DNS Leak Protection
+
+When enabled, DNS queries are routed through the VPN provider's DNS servers:
+- PIA: `10.0.0.243`, `10.0.0.242`
+- Mullvad: `10.64.0.1`
+
+The WireGuard configuration includes DNS settings, and on macOS a route is added to ensure DNS traffic goes through the tunnel.
+
+### Credential Security
+
+- Credentials are marked for cleanup and cleared from memory after authentication
+- Tokens are stored with mode 600 (owner read/write only)
+- Config directories use mode 700
+- TLS 1.2+ is enforced for all API calls
+- A "dead-man switch" checks scripts for insecure patterns before execution
+
+## Architecture
+
+```
+velum-vpn/
+├── bin/                          # Executable scripts
+│   ├── velum                     # Main CLI entry point
+│   ├── velum-config              # Configuration wizard
+│   ├── velum-connect             # VPN connection
+│   ├── velum-disconnect          # VPN disconnection
+│   ├── velum-killswitch          # Kill switch management
+│   ├── velum-status              # Connection status
+│   └── velum-test                # Connection validator
+│
+├── lib/                          # Libraries
+│   ├── velum-core.sh             # Core utilities, colors, logging
+│   ├── velum-security.sh         # Security utilities, validation
+│   ├── os/                       # OS abstraction layer
+│   │   ├── detect.sh             # OS detection and loader
+│   │   ├── macos.sh              # macOS implementation
+│   │   └── linux.sh              # Linux implementation
+│   └── providers/                # VPN provider plugins
+│       ├── provider-base.sh      # Provider interface
+│       ├── pia.sh                # PIA implementation
+│       └── mullvad.sh            # Mullvad implementation
+│
+├── etc/                          # Static configuration
+│   └── providers/
+│       └── pia/
+│           └── ca.rsa.4096.crt   # PIA CA certificate
+│
+└── docs/                         # Documentation
+    └── spec/                     # Architecture specifications
 ```
 
-## Kill Switch
+### Provider Interface
 
-The kill switch blocks ALL internet traffic if the VPN connection drops, preventing your real IP from being exposed. This is critical for privacy-sensitive use cases.
+Each provider implements the following functions:
 
-### How It Works
+```bash
+# Metadata
+provider_name()              # Provider display name
+provider_version()           # Provider module version
+provider_auth_type()         # "username_password" or "account_number"
 
-- Uses macOS pf (packet filter) firewall
-- Blocks all traffic except through the VPN tunnel
-- Auto-detects your local subnet for LAN access
-- Sends macOS notification if VPN drops unexpectedly
-- Automatically enabled/disabled via WireGuard PostUp/PostDown
+# Authentication
+provider_validate_creds()    # Validate credential format
+provider_authenticate()      # Authenticate and get token
 
-### LAN Policies
+# Servers
+provider_get_servers()       # Fetch server list
+provider_filter_servers()    # Filter by criteria
+provider_test_latency()      # Test server latency
 
-| Policy | Description | Use Case |
-|--------|-------------|----------|
-| `block` | Block all LAN traffic | Public WiFi, maximum security |
-| `detect` | Auto-detect and allow local subnet | Home/office with printers, NAS |
-| `10.0.1.0/24` | Allow specific CIDR | Custom network configuration |
+# WireGuard
+provider_wg_exchange()       # Exchange WireGuard keys
 
-### Manual Control
+# Features
+provider_supports_pf()       # Port forwarding support
+provider_enable_pf()         # Enable port forwarding
+provider_refresh_pf()        # Refresh port forwarding
+provider_supports_dip()      # Dedicated IP support
+provider_get_dip()           # Get DIP info
+
+# Provider-specific
+provider_get_dns()           # Get DNS servers
+provider_get_ca_cert()       # Get CA certificate path
+```
+
+### OS Abstraction Layer
+
+Each OS module implements:
+
+```bash
+# Network
+os_get_local_ip()            # Get local IP address
+os_get_gateway()             # Get default gateway
+os_get_primary_interface()   # Get primary network interface
+os_get_dns()                 # Get current DNS servers
+os_detect_subnet()           # Detect local subnet
+os_detect_vpn_interface()    # Find WireGuard interface
+
+# IPv6
+os_ipv6_enabled()            # Check if IPv6 is enabled
+os_disable_ipv6()            # Disable IPv6 on interfaces
+os_enable_ipv6()             # Re-enable IPv6
+
+# DNS
+os_set_dns()                 # Set DNS servers
+os_restore_dns()             # Restore original DNS
+
+# Kill Switch
+os_killswitch_enable()       # Enable firewall rules
+os_killswitch_disable()      # Disable firewall rules
+os_killswitch_status()       # Get kill switch status
+os_killswitch_rule_count()   # Count firewall rules
+```
+
+## Adding a New Provider
+
+1. Create `lib/providers/yourprovider.sh`
+2. Implement the provider interface functions
+3. The provider will be auto-discovered by `list_providers`
+
+See `lib/providers/pia.sh` or `lib/providers/mullvad.sh` for examples.
+
+## Troubleshooting
+
+### Connection Issues
+
+```bash
+# Check WireGuard status
+sudo wg show
+
+# Check routes
+netstat -rn | grep -E "^0|utun"
+
+# Check DNS
+scutil --dns | grep nameserver  # macOS
+cat /etc/resolv.conf            # Linux
+
+# Run comprehensive test
+sudo velum test
+```
+
+### Kill Switch Issues
 
 ```bash
 # Check kill switch status
-sudo ./pia-killswitch.sh status
+velum killswitch status
 
-# Manually enable (if not using run_setup.sh)
-sudo ./pia-killswitch.sh enable --vpn-ip 158.173.21.201 --lan-policy detect
+# View firewall rules (macOS)
+sudo pfctl -a velum_killswitch -s rules
 
-# Manually disable
-sudo ./pia-killswitch.sh disable
+# View firewall rules (Linux - iptables)
+sudo iptables -L VELUM_KILLSWITCH -v
+
+# View firewall rules (Linux - nftables)
+sudo nft list table inet velum_killswitch
+
+# Manually disable if stuck
+sudo velum killswitch disable
 ```
 
-### Verify Kill Switch
-
-Run `pia-test` to verify the kill switch is active:
-
-```
-[6] Kill Switch
-    pf status:  Enabled
-    Kill switch: PASS - Active (1 block, 8 pass rules)
-    LAN allowed: 10.0.0.0/24
-```
-
-## Dependencies
-
-### macOS
+### Token Expired
 
 ```bash
-brew install wireguard-tools curl jq
+# Re-authenticate
+velum config
+# Follow prompts, existing config will be preserved
 ```
 
-### Debian/Ubuntu
+### Permission Denied
 
+Most operations require root:
 ```bash
-sudo apt install wireguard-tools curl jq
+sudo velum connect
+sudo velum disconnect
+sudo velum test
 ```
-
-## Platform Notes
-
-### IPv6
-
-Disable IPv6 to prevent leaks:
-
-**macOS:**
-```bash
-networksetup -setv6off "Wi-Fi"
-networksetup -setv6off "Ethernet"
-```
-
-**Linux:**
-```bash
-sudo sysctl -w net.ipv6.conf.all.disable_ipv6=1
-sudo sysctl -w net.ipv6.conf.default.disable_ipv6=1
-```
-
-### DNS Routing
-
-If your local network uses 10.0.0.0/24, PIA's DNS (10.0.0.243) may route locally instead of through the VPN. This fork automatically adds an explicit route through the tunnel.
-
-**Note:** PIA's use of 10.0.0.x for internal DNS is problematic for users with home networks in this range. We've implemented workarounds, but recommend PIA implement signed server lists with non-conflicting DNS IPs.
-
-### Connect / Disconnect
-
-After initial setup, the WireGuard config is saved to `/etc/wireguard/pia.conf`. You can reconnect without re-running setup:
-
-```bash
-# Connect
-sudo wg-quick up pia
-
-# Disconnect
-sudo wg-quick down pia
-pkill -f port_forwarding.sh
-```
-
-**Note:** Port forwarding requires re-running `./run_setup.sh` or manually starting `./port_forwarding.sh`.
-
-## Geolocated Servers
-
-Some PIA servers are "geolocated" - physically located in a different country than advertised. This may have privacy or legal implications.
-
-To exclude geolocated servers:
-
-```bash
-ALLOW_GEO_SERVERS=false sudo ./run_setup.sh
-```
-
-The setup script will also prompt you.
-
-## Port Forwarding
-
-Port forwarding is enabled by default (`PIA_PF=true`). The forwarded port is displayed after connection and refreshed automatically every 15 minutes.
-
-**Note:** Port forwarding is disabled on US servers.
-
-## Scripts Reference
-
-| Script | Purpose |
-|--------|---------|
-| `run_setup.sh` | Interactive setup (prompts for options) |
-| `pia-test` | Connection security validator (16 checks) |
-| `pia-killswitch.sh` | Kill switch management (enable/disable/status) |
-| `get_region.sh` | Server selection and latency testing |
-| `get_token.sh` | Authentication token retrieval |
-| `connect_to_wireguard_with_token.sh` | WireGuard connection |
-| `connect_to_openvpn_with_token.sh` | OpenVPN connection |
-| `port_forwarding.sh` | Port forwarding management |
-
-## Security Considerations
-
-### What This Fork Fixes
-
-- **Token exposure**: Tokens no longer printed to console
-- **File permissions**: All sensitive files use 600/700 permissions
-- **Command injection**: Replaced `eval` with safe alternatives
-- **Curl security**: Dead-man switch refuses to run if `-k`/`--insecure` flags detected
-- **Server list validation**: Basic sanity checks on API responses
-
-### Remaining Limitations
-
-- Credentials in environment variables during session (standard for shell scripts)
-- No certificate pinning for auth endpoint (would require PIA to publish pinned certs)
-- Server list not cryptographically signed (recommendation sent to PIA)
-
-### For Maximum Security
-
-For the highest security requirements, consider:
-- Using the official PIA application
-- Running in a dedicated VM or container
-- Enabling the kill switch with `block` LAN policy
-- Verifying WebRTC leaks in your browser at browserleaks.com/webrtc
-
-## Upstream
-
-Based on [pia-foss/manual-connections](https://github.com/pia-foss/manual-connections).
 
 ## License
 
-[MIT License](LICENSE)
+Copyright (c) 2025. All rights reserved.
+
+This software is proprietary and confidential. Unauthorized copying, modification,
+distribution, or use of this software, via any medium, is strictly prohibited.
+
+See [LICENSE](LICENSE) for full terms.
+
+## Version
+
+velum-vpn v0.1.0-dev

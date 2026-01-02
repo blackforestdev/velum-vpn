@@ -1,0 +1,100 @@
+#!/usr/bin/env bash
+# velum-disconnect - Cleanly disconnect from VPN
+# Handles: WireGuard teardown, kill switch disable, IPv6 restore, DNS restore
+
+set -euo pipefail
+
+# ============================================================================
+# INITIALIZATION
+# ============================================================================
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+VELUM_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+export VELUM_ROOT
+
+# Source libraries
+source "$VELUM_ROOT/lib/velum-core.sh"
+source "$VELUM_ROOT/lib/os/detect.sh"
+
+# ============================================================================
+# DISCONNECT
+# ============================================================================
+
+stop_port_forwarding() {
+  if [[ -f /tmp/velum-pf.pid ]]; then
+    local pid
+    pid=$(cat /tmp/velum-pf.pid 2>/dev/null || echo "")
+    if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then
+      log_info "Stopping port forwarding keepalive..."
+      kill "$pid" 2>/dev/null || true
+    fi
+    rm -f /tmp/velum-pf.pid
+  fi
+}
+
+stop_wireguard() {
+  log_info "Stopping WireGuard..."
+
+  if wg-quick down pia 2>/dev/null; then
+    print_ok "WireGuard interface stopped"
+  else
+    print_warn "WireGuard interface was not running"
+  fi
+}
+
+restore_ipv6() {
+  log_info "Restoring IPv6..."
+
+  if os_enable_ipv6 2>/dev/null; then
+    print_ok "IPv6 restored on all interfaces"
+  else
+    print_warn "Could not restore IPv6 on some interfaces"
+  fi
+}
+
+restore_dns() {
+  log_info "Restoring DNS..."
+
+  if os_restore_dns 2>/dev/null; then
+    print_ok "DNS settings restored"
+  else
+    # Not an error - DNS backup may not exist
+    log_info "No DNS backup to restore"
+  fi
+}
+
+# ============================================================================
+# MAIN
+# ============================================================================
+
+main() {
+  echo
+  echo "${C_BOLD}velum-disconnect${C_RESET}"
+  echo "================"
+  echo
+
+  # Require root
+  require_root
+
+  # Stop in reverse order of start
+
+  # 1. Stop port forwarding
+  stop_port_forwarding
+
+  # 2. Stop WireGuard (this triggers PostDown which disables kill switch)
+  stop_wireguard
+
+  # 3. Restore IPv6 (if it was disabled)
+  restore_ipv6
+
+  # 4. Restore DNS
+  restore_dns
+
+  echo
+  print_ok "VPN disconnected successfully!"
+  echo
+  echo "Your internet traffic is no longer protected by the VPN."
+  echo
+}
+
+main "$@"

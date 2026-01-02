@@ -1,0 +1,633 @@
+#!/usr/bin/env bash
+# velum-test - Provider-agnostic VPN connection validator
+# Run while connected to verify no leaks
+
+set -uo pipefail
+
+# ============================================================================
+# INITIALIZATION
+# ============================================================================
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+VELUM_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+export VELUM_ROOT
+
+# Source libraries
+source "$VELUM_ROOT/lib/velum-core.sh"
+source "$VELUM_ROOT/lib/os/detect.sh"
+
+# ============================================================================
+# COLORS
+# ============================================================================
+
+if [[ -t 1 ]]; then
+  RED=$(tput setaf 1)
+  GREEN=$(tput setaf 2)
+  YELLOW=$(tput setaf 3)
+  BLUE=$(tput setaf 4)
+  NC=$(tput sgr0)
+else
+  RED='' GREEN='' YELLOW='' BLUE='' NC=''
+fi
+
+PASS="${GREEN}PASS${NC}"
+FAIL="${RED}FAIL${NC}"
+WARN="${YELLOW}WARN${NC}"
+
+# Track test results
+TESTS_PASSED=0
+TESTS_FAILED=0
+TESTS_WARNED=0
+
+# ============================================================================
+# CONFIGURATION
+# ============================================================================
+
+CONFIG_FILE="$VELUM_CONFIG_FILE"
+declare -A CONFIG
+
+load_test_config() {
+  if [[ -f "$CONFIG_FILE" ]]; then
+    # shellcheck source=/dev/null
+    source "$CONFIG_FILE"
+  fi
+}
+
+# ============================================================================
+# TEST FUNCTIONS
+# ============================================================================
+
+# Test 1: WireGuard Interface
+test_wireguard() {
+  echo "${BLUE}[1] WireGuard Interface${NC}"
+
+  local wg_output
+  wg_output=$(sudo wg show 2>/dev/null)
+
+  if [[ -z "$wg_output" ]]; then
+    echo "    Status:     $FAIL - No WireGuard interface found"
+    ((TESTS_FAILED++))
+    return
+  fi
+
+  local wg_iface
+  wg_iface=$(echo "$wg_output" | grep "^interface:" | awk '{print $2}')
+  echo "    Interface:  ${GREEN}$wg_iface${NC}"
+
+  # Check handshake
+  local handshake
+  handshake=$(echo "$wg_output" | grep "latest handshake:" | sed 's/.*latest handshake: //')
+  if [[ -n "$handshake" ]]; then
+    echo "    Handshake:  ${GREEN}$handshake${NC}"
+    ((TESTS_PASSED++))
+  else
+    echo "    Handshake:  $FAIL - No handshake (tunnel may not be working)"
+    ((TESTS_FAILED++))
+  fi
+
+  # Check transfer
+  local transfer
+  transfer=$(echo "$wg_output" | grep "transfer:" | sed 's/.*transfer: //')
+  if [[ -n "$transfer" ]]; then
+    echo "    Transfer:   ${GREEN}$transfer${NC}"
+  fi
+
+  # Check endpoint
+  local endpoint
+  endpoint=$(echo "$wg_output" | grep "endpoint:" | awk '{print $2}')
+  if [[ -n "$endpoint" ]]; then
+    echo "    Endpoint:   ${GREEN}$endpoint${NC}"
+  fi
+
+  # Check AllowedIPs captures all traffic
+  local allowed_ips
+  allowed_ips=$(echo "$wg_output" | grep "allowed ips:" | sed 's/.*allowed ips: //')
+  if [[ "$allowed_ips" == *"0.0.0.0/0"* ]] || [[ "$allowed_ips" == *"0.0.0.0/1"* && "$allowed_ips" == *"128.0.0.0/1"* ]]; then
+    echo "    AllowedIPs: $PASS - All traffic routed through tunnel"
+    ((TESTS_PASSED++))
+  else
+    echo "    AllowedIPs: $FAIL - Not capturing all traffic: $allowed_ips"
+    ((TESTS_FAILED++))
+  fi
+
+  # Check handshake age
+  if [[ -n "$handshake" ]]; then
+    if [[ "$handshake" == *"minute"* ]]; then
+      local handshake_mins
+      handshake_mins=$(echo "$handshake" | grep -o '[0-9]*' | head -1)
+      if [[ "$handshake_mins" -gt 5 ]]; then
+        echo "    Freshness:  $WARN - Last handshake ${handshake_mins}m ago (may be stale)"
+        ((TESTS_WARNED++))
+      else
+        echo "    Freshness:  $PASS - Handshake recent"
+        ((TESTS_PASSED++))
+      fi
+    elif [[ "$handshake" == *"second"* ]]; then
+      echo "    Freshness:  $PASS - Handshake very recent"
+      ((TESTS_PASSED++))
+    elif [[ "$handshake" == *"hour"* ]] || [[ "$handshake" == *"day"* ]]; then
+      echo "    Freshness:  $WARN - Handshake stale ($handshake)"
+      ((TESTS_WARNED++))
+    fi
+  fi
+  echo ""
+}
+
+# Test 2: Public IP Check
+test_public_ip() {
+  echo "${BLUE}[2] Public IP Check${NC}"
+
+  local ip_ipify ip_icanhazip
+  ip_ipify=$(curl -s --tlsv1.2 --max-time 5 https://api.ipify.org 2>/dev/null)
+  ip_icanhazip=$(curl -s --tlsv1.2 --max-time 5 https://icanhazip.com 2>/dev/null | tr -d '[:space:]')
+
+  if [[ -n "$ip_ipify" ]]; then
+    echo "    ipify.org:  ${GREEN}$ip_ipify${NC}"
+
+    # Get IP info
+    local ip_info
+    ip_info=$(curl -s --tlsv1.2 --max-time 5 "https://ipinfo.io/$ip_ipify/json" 2>/dev/null)
+    if [[ -n "$ip_info" ]]; then
+      local org city country
+      org=$(echo "$ip_info" | grep -o '"org": *"[^"]*"' | cut -d'"' -f4)
+      city=$(echo "$ip_info" | grep -o '"city": *"[^"]*"' | cut -d'"' -f4)
+      country=$(echo "$ip_info" | grep -o '"country": *"[^"]*"' | cut -d'"' -f4)
+      echo "    Location:   ${GREEN}$city, $country${NC}"
+      echo "    ISP:        ${GREEN}$org${NC}"
+
+      # Check for known VPN providers
+      local is_vpn_ip=false
+      local provider_name="${CONFIG[provider]:-unknown}"
+
+      # PIA datacenter providers
+      if [[ "$org" == *"M247"* ]] || [[ "$org" == *"PIA"* ]] || [[ "$org" == *"Private Internet Access"* ]] || \
+         [[ "$org" == *"Glesys"* ]] || [[ "$org" == *"Privex"* ]] || [[ "$org" == *"Quadranet"* ]] || \
+         [[ "$org" == *"Cogent"* ]] || [[ "$org" == *"Leaseweb"* ]] || [[ "$org" == *"Datacamp"* ]]; then
+        is_vpn_ip=true
+      fi
+
+      # Mullvad datacenter providers
+      if [[ "$org" == *"Mullvad"* ]] || [[ "$org" == *"31173"* ]] || [[ "$org" == *"Arelion"* ]] || \
+         [[ "$org" == *"DataPacket"* ]] || [[ "$org" == *"Servinga"* ]]; then
+        is_vpn_ip=true
+      fi
+
+      if [[ "$is_vpn_ip" == "true" ]]; then
+        echo "    VPN IP:     $PASS - Detected as VPN/datacenter IP"
+        ((TESTS_PASSED++))
+      else
+        echo "    VPN IP:     $WARN - ISP not recognized as known $provider_name provider"
+        ((TESTS_WARNED++))
+      fi
+    fi
+  else
+    echo "    ipify.org:  $FAIL - Could not retrieve public IP"
+    ((TESTS_FAILED++))
+  fi
+
+  if [[ -n "$ip_icanhazip" && "$ip_icanhazip" != "$ip_ipify" ]]; then
+    echo "    icanhazip:  ${YELLOW}$ip_icanhazip${NC} (differs from ipify!)"
+    ((TESTS_WARNED++))
+  fi
+  echo ""
+}
+
+# Test 3: DNS Leak Test
+test_dns_leak() {
+  echo "${BLUE}[3] DNS Leak Test${NC}"
+
+  # Get DNS from WireGuard config
+  local vpn_dns=""
+  if [[ -f /etc/wireguard/pia.conf ]]; then
+    vpn_dns=$(grep "^DNS" /etc/wireguard/pia.conf 2>/dev/null | cut -d= -f2 | tr -d ' ')
+  fi
+
+  # Get configured DNS (OS-specific)
+  local dns_servers=""
+  if [[ "$VELUM_OS" == "macos" ]]; then
+    dns_servers=$(scutil --dns 2>/dev/null | grep "nameserver\[" | head -5 | awk '{print $3}' | sort -u | tr '\n' ' ')
+
+    # Try to detect provider DNS
+    if [[ -z "$vpn_dns" ]]; then
+      # Check for 10.x.x.x (PIA)
+      vpn_dns=$(scutil --dns 2>/dev/null | grep "nameserver\[" | awk '{print $3}' | grep "^10\." | head -1)
+    fi
+  else
+    # Linux
+    if [[ -f /etc/resolv.conf ]]; then
+      dns_servers=$(grep "^nameserver" /etc/resolv.conf 2>/dev/null | awk '{print $2}' | sort -u | tr '\n' ' ')
+    fi
+  fi
+
+  echo "    Configured: ${GREEN}${dns_servers:-None}${NC}"
+
+  if [[ -z "$vpn_dns" ]]; then
+    # Try common VPN DNS addresses
+    for try_dns in 10.0.0.243 10.0.0.242 10.64.0.1; do
+      if nslookup -timeout=1 google.com "$try_dns" >/dev/null 2>&1; then
+        vpn_dns="$try_dns"
+        break
+      fi
+    done
+  fi
+
+  if [[ -z "$vpn_dns" ]]; then
+    echo "    VPN DNS:    $WARN - Could not detect VPN DNS server"
+    ((TESTS_WARNED++))
+  else
+    echo "    VPN DNS:    ${GREEN}$vpn_dns${NC}"
+
+    # Test DNS resolution through VPN DNS
+    if nslookup -timeout=3 google.com "$vpn_dns" >/dev/null 2>&1; then
+      echo "    nslookup:   $PASS - Resolving through VPN DNS"
+      ((TESTS_PASSED++))
+    else
+      echo "    nslookup:   $FAIL - Cannot resolve through VPN DNS"
+      ((TESTS_FAILED++))
+    fi
+
+    # Test with dig if available
+    if command -v dig >/dev/null 2>&1; then
+      if dig +short +time=3 "@$vpn_dns" google.com >/dev/null 2>&1; then
+        echo "    dig:        $PASS - Resolving through VPN DNS"
+        ((TESTS_PASSED++))
+      else
+        echo "    dig:        $FAIL - Cannot resolve through VPN DNS"
+        ((TESTS_FAILED++))
+      fi
+    fi
+
+    # Test with host if available
+    if command -v host >/dev/null 2>&1; then
+      if host -W 3 google.com "$vpn_dns" >/dev/null 2>&1; then
+        echo "    host:       $PASS - Resolving through VPN DNS"
+        ((TESTS_PASSED++))
+      else
+        echo "    host:       $FAIL - Cannot resolve through VPN DNS"
+        ((TESTS_FAILED++))
+      fi
+    fi
+  fi
+  echo ""
+}
+
+# Test 4: Route Table Check
+test_routes() {
+  echo "${BLUE}[4] Route Table Check${NC}"
+
+  if [[ "$VELUM_OS" == "macos" ]]; then
+    # Check for VPN routes on macOS
+    local route_0 route_128
+    route_0=$(netstat -rn 2>/dev/null | grep "^0/1.*utun")
+    route_128=$(netstat -rn 2>/dev/null | grep "^128.0/1.*utun")
+
+    if [[ -n "$route_0" && -n "$route_128" ]]; then
+      echo "    0.0.0.0/1:  $PASS - Routed through VPN"
+      echo "    128.0.0.0/1: $PASS - Routed through VPN"
+      ((TESTS_PASSED++))
+    else
+      echo "    VPN Routes: $FAIL - Default routes not through VPN"
+      ((TESTS_FAILED++))
+    fi
+  else
+    # Linux
+    local default_route
+    default_route=$(ip route show default 2>/dev/null)
+
+    if [[ "$default_route" == *"wg"* ]] || [[ "$default_route" == *"pia"* ]]; then
+      echo "    Default:    $PASS - Routed through VPN"
+      ((TESTS_PASSED++))
+    else
+      # Check for 0.0.0.0/1 and 128.0.0.0/1 routes
+      local route_0 route_128
+      route_0=$(ip route show 0.0.0.0/1 2>/dev/null | grep -E "wg|pia")
+      route_128=$(ip route show 128.0.0.0/1 2>/dev/null | grep -E "wg|pia")
+
+      if [[ -n "$route_0" && -n "$route_128" ]]; then
+        echo "    0.0.0.0/1:  $PASS - Routed through VPN"
+        echo "    128.0.0.0/1: $PASS - Routed through VPN"
+        ((TESTS_PASSED++))
+      else
+        echo "    VPN Routes: $FAIL - Default routes not through VPN"
+        ((TESTS_FAILED++))
+      fi
+    fi
+  fi
+  echo ""
+}
+
+# Test 5: Traffic Test
+test_traffic() {
+  echo "${BLUE}[5] Traffic Test${NC}"
+
+  # Ping test
+  local ping_result
+  if [[ "$VELUM_OS" == "macos" ]]; then
+    ping_result=$(ping -c 3 -W 2000 1.1.1.1 2>/dev/null)
+  else
+    ping_result=$(ping -c 3 -W 2 1.1.1.1 2>/dev/null)
+  fi
+
+  if [[ $? -eq 0 ]]; then
+    local ping_time
+    ping_time=$(echo "$ping_result" | grep -E "avg|rtt" | awk -F'/' '{print $5}')
+    echo "    Ping 1.1.1.1: $PASS - ${ping_time}ms avg"
+    ((TESTS_PASSED++))
+  else
+    echo "    Ping 1.1.1.1: $FAIL - No response"
+    ((TESTS_FAILED++))
+  fi
+
+  # HTTP test
+  local http_test
+  http_test=$(curl -s --tlsv1.2 --max-time 5 -o /dev/null -w "%{http_code}" https://www.google.com 2>/dev/null)
+  if [[ "$http_test" =~ ^[23] ]]; then
+    echo "    HTTPS:      $PASS - Google responded $http_test"
+    ((TESTS_PASSED++))
+  else
+    echo "    HTTPS:      $FAIL - HTTP code: $http_test"
+    ((TESTS_FAILED++))
+  fi
+
+  # MTU test
+  local mtu_test
+  if [[ "$VELUM_OS" == "macos" ]]; then
+    mtu_test=$(ping -c 1 -W 3000 -D -s 1372 1.1.1.1 2>/dev/null)
+  else
+    mtu_test=$(ping -c 1 -W 3 -M do -s 1372 1.1.1.1 2>/dev/null)
+  fi
+
+  if [[ $? -eq 0 ]]; then
+    echo "    MTU (1400): $PASS - Large packets work through tunnel"
+    ((TESTS_PASSED++))
+  else
+    echo "    MTU (1400): $WARN - Tunnel MTU may be reduced"
+    ((TESTS_WARNED++))
+  fi
+  echo ""
+}
+
+# Test 6: Kill Switch
+test_killswitch() {
+  echo "${BLUE}[6] Kill Switch${NC}"
+
+  if [[ "$VELUM_OS" == "macos" ]]; then
+    # macOS - check pf
+    local pf_enabled
+    pf_enabled=$(sudo pfctl -s info 2>/dev/null | grep "Status:" | awk '{print $2}')
+
+    if [[ "$pf_enabled" == "Enabled" ]]; then
+      echo "    pf status:  ${GREEN}Enabled${NC}"
+
+      # Check for velum kill switch anchor
+      local ks_rules
+      ks_rules=$(sudo pfctl -a velum_killswitch -s rules 2>/dev/null | wc -l | tr -d ' ')
+
+      if [[ "$ks_rules" -gt 0 ]]; then
+        local block_rules pass_rules
+        block_rules=$(sudo pfctl -a velum_killswitch -s rules 2>/dev/null | grep -c "block")
+        pass_rules=$(sudo pfctl -a velum_killswitch -s rules 2>/dev/null | grep -c "pass")
+        echo "    Kill switch: $PASS - Active ($block_rules block, $pass_rules pass rules)"
+        ((TESTS_PASSED++))
+
+        # Check IPv6 blocking
+        local ipv6_blocked
+        ipv6_blocked=$(sudo pfctl -a velum_killswitch -s rules 2>/dev/null | grep -c "block.*inet6")
+        if [[ "$ipv6_blocked" -gt 0 ]]; then
+          echo "    IPv6 block: $PASS - IPv6 blocked at firewall"
+          ((TESTS_PASSED++))
+        else
+          echo "    IPv6 block: $WARN - IPv6 not blocked by kill switch"
+          ((TESTS_WARNED++))
+        fi
+      else
+        # Check for PIA kill switch (backwards compat)
+        ks_rules=$(sudo pfctl -a pia_killswitch -s rules 2>/dev/null | wc -l | tr -d ' ')
+        if [[ "$ks_rules" -gt 0 ]]; then
+          echo "    Kill switch: $PASS - PIA kill switch active"
+          ((TESTS_PASSED++))
+        else
+          echo "    Kill switch: $WARN - Not active (traffic may leak if VPN drops)"
+          ((TESTS_WARNED++))
+        fi
+      fi
+    else
+      echo "    pf status:  ${YELLOW}Disabled${NC}"
+      echo "    Kill switch: $WARN - Not active (traffic may leak if VPN drops)"
+      ((TESTS_WARNED++))
+    fi
+  else
+    # Linux - check iptables/nftables
+    if command -v nft >/dev/null 2>&1; then
+      local nft_rules
+      nft_rules=$(sudo nft list table inet velum_killswitch 2>/dev/null | wc -l)
+      if [[ "$nft_rules" -gt 0 ]]; then
+        echo "    nftables:   $PASS - Kill switch active"
+        ((TESTS_PASSED++))
+      else
+        echo "    nftables:   $WARN - Kill switch not found"
+        ((TESTS_WARNED++))
+      fi
+    elif command -v iptables >/dev/null 2>&1; then
+      local ipt_rules
+      ipt_rules=$(sudo iptables -L VELUM_KILLSWITCH 2>/dev/null | wc -l)
+      if [[ "$ipt_rules" -gt 2 ]]; then
+        echo "    iptables:   $PASS - Kill switch active"
+        ((TESTS_PASSED++))
+      else
+        ipt_rules=$(sudo iptables -L -n 2>/dev/null | grep -c "DROP\|REJECT")
+        if [[ "$ipt_rules" -gt 0 ]]; then
+          echo "    iptables:   $WARN - $ipt_rules drop/reject rules found (not velum)"
+          ((TESTS_WARNED++))
+        else
+          echo "    iptables:   $WARN - Kill switch not active"
+          ((TESTS_WARNED++))
+        fi
+      fi
+    fi
+  fi
+  echo ""
+}
+
+# Test 7: Potential Leak Sources
+test_leak_sources() {
+  echo "${BLUE}[7] Potential Leak Sources${NC}"
+
+  # Check for IPv6 on interfaces
+  local ipv6_leaks=""
+
+  if [[ "$VELUM_OS" == "macos" ]]; then
+    while IFS= read -r service; do
+      [[ -z "$service" ]] && continue
+      local ipv6_status
+      ipv6_status=$(networksetup -getinfo "$service" 2>/dev/null | grep "IPv6:" | awk '{print $2}')
+      if [[ "$ipv6_status" == "Automatic" || "$ipv6_status" == "Manual" ]]; then
+        ipv6_leaks="$ipv6_leaks $service"
+      fi
+    done < <(networksetup -listallnetworkservices 2>/dev/null | tail -n +2)
+  else
+    # Linux - check for IPv6 addresses on non-loopback interfaces
+    if ip -6 addr show scope global 2>/dev/null | grep -q "inet6"; then
+      ipv6_leaks=" detected on interfaces"
+    fi
+  fi
+
+  if [[ -n "$ipv6_leaks" ]]; then
+    echo "    IPv6:       $WARN - Enabled on:$ipv6_leaks"
+    ((TESTS_WARNED++))
+  else
+    echo "    IPv6:       $PASS - Disabled or not detected"
+    ((TESTS_PASSED++))
+  fi
+
+  # Check for known leak processes
+  local leak_procs=""
+  for proc in "AnyDesk" "TeamViewer" "Chrome Remote Desktop" "anydesk" "teamviewer"; do
+    if pgrep -i "$proc" >/dev/null 2>&1; then
+      leak_procs="$leak_procs $proc"
+    fi
+  done
+
+  if [[ -n "$leak_procs" ]]; then
+    echo "    Remote:     $WARN - Found:$leak_procs"
+    ((TESTS_WARNED++))
+  else
+    echo "    Remote:     $PASS - No remote access tools detected"
+    ((TESTS_PASSED++))
+  fi
+
+  echo "    WebRTC:     ${YELLOW}Manual check required${NC} - browserleaks.com/webrtc"
+  echo ""
+}
+
+# Test 8: Port Forwarding
+test_port_forwarding() {
+  echo "${BLUE}[8] Port Forwarding${NC}"
+
+  local pf_pid
+  pf_pid=$(pgrep -f "velum-pf\|port_forwarding" 2>/dev/null)
+
+  if [[ -n "$pf_pid" ]]; then
+    echo "    Status:     ${GREEN}Active${NC} (PID: $pf_pid)"
+    ((TESTS_PASSED++))
+
+    # Try to find the forwarded port
+    if [[ -f /tmp/velum-pf-port ]]; then
+      local pf_port
+      pf_port=$(cat /tmp/velum-pf-port 2>/dev/null)
+      if [[ -n "$pf_port" ]]; then
+        echo "    Port:       ${GREEN}$pf_port${NC}"
+      fi
+    fi
+  else
+    local provider_name="${CONFIG[provider]:-unknown}"
+    if [[ "$provider_name" == "mullvad" ]]; then
+      echo "    Status:     ${YELLOW}Not supported${NC} (Mullvad removed port forwarding)"
+    else
+      echo "    Status:     ${YELLOW}Not active${NC} (optional feature)"
+    fi
+  fi
+  echo ""
+}
+
+# Test 9: Reconnection Info
+test_reconnection() {
+  echo "${BLUE}[9] Reconnection${NC}"
+
+  local wg_config_found=false
+  for config_path in /etc/wireguard/pia.conf /usr/local/etc/wireguard/pia.conf; do
+    if sudo test -f "$config_path" 2>/dev/null; then
+      echo "    Quick:      ${GREEN}wg-quick up pia${NC}"
+      echo "    Config:     ${GREEN}$config_path${NC}"
+
+      # Show config age
+      local config_mtime now age_hours age_days
+      if [[ "$VELUM_OS" == "macos" ]]; then
+        config_mtime=$(sudo stat -f "%m" "$config_path" 2>/dev/null)
+      else
+        config_mtime=$(sudo stat -c "%Y" "$config_path" 2>/dev/null)
+      fi
+
+      if [[ -n "$config_mtime" ]]; then
+        now=$(date +%s)
+        age_hours=$(( (now - config_mtime) / 3600 ))
+        age_days=$(( age_hours / 24 ))
+        if [[ "$age_days" -gt 30 ]]; then
+          echo "    Key age:    $WARN - Config is ${age_days} days old (consider rotating)"
+          ((TESTS_WARNED++))
+        elif [[ "$age_days" -gt 0 ]]; then
+          echo "    Key age:    ${GREEN}${age_days} days${NC}"
+        else
+          echo "    Key age:    ${GREEN}${age_hours} hours${NC}"
+        fi
+      fi
+
+      wg_config_found=true
+      ((TESTS_PASSED++))
+      break
+    fi
+  done
+
+  if [[ "$wg_config_found" == "false" ]]; then
+    echo "    Method:     ${YELLOW}velum connect${NC} (no saved config for wg-quick)"
+  fi
+  echo ""
+}
+
+# ============================================================================
+# MAIN
+# ============================================================================
+
+main() {
+  echo ""
+  echo "${BLUE}=================================================================${NC}"
+  echo "${BLUE}               velum VPN Connection Validator                    ${NC}"
+  echo "${BLUE}=================================================================${NC}"
+  echo ""
+
+  # Load configuration
+  load_test_config
+
+  local provider_name="${CONFIG[provider]:-unknown}"
+  if [[ "$provider_name" != "unknown" ]]; then
+    echo "    Provider:   ${GREEN}$provider_name${NC}"
+    echo ""
+  fi
+
+  # Run all tests
+  test_wireguard
+  test_public_ip
+  test_dns_leak
+  test_routes
+  test_traffic
+  test_killswitch
+  test_leak_sources
+  test_port_forwarding
+  test_reconnection
+
+  # Summary
+  echo "${BLUE}=================================================================${NC}"
+  echo "${BLUE}                          SUMMARY                                ${NC}"
+  echo "${BLUE}=================================================================${NC}"
+  echo ""
+  echo "    ${GREEN}PASSED:${NC}  $TESTS_PASSED"
+  echo "    ${YELLOW}WARNED:${NC}  $TESTS_WARNED"
+  echo "    ${RED}FAILED:${NC}  $TESTS_FAILED"
+  echo ""
+
+  if [[ $TESTS_FAILED -eq 0 && $TESTS_WARNED -eq 0 ]]; then
+    echo "    ${GREEN}VPN connection appears secure.${NC}"
+  elif [[ $TESTS_FAILED -eq 0 ]]; then
+    echo "    ${YELLOW}VPN connected with warnings - review above.${NC}"
+  else
+    echo "    ${RED}VPN connection has issues - review failures above.${NC}"
+  fi
+  echo ""
+
+  # Exit with appropriate code
+  [[ $TESTS_FAILED -gt 0 ]] && exit 1
+  [[ $TESTS_WARNED -gt 0 ]] && exit 2
+  exit 0
+}
+
+main "$@"

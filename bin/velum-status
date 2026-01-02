@@ -1,0 +1,193 @@
+#!/usr/bin/env bash
+# velum-status - Show VPN connection status
+# Displays: connection state, security status, network info
+
+set -euo pipefail
+
+# ============================================================================
+# INITIALIZATION
+# ============================================================================
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+VELUM_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+export VELUM_ROOT
+
+# Source libraries
+source "$VELUM_ROOT/lib/velum-core.sh"
+source "$VELUM_ROOT/lib/os/detect.sh"
+
+# ============================================================================
+# STATUS CHECKS
+# ============================================================================
+
+# Check if WireGuard is running
+# Sets global vars: WG_STATUS, WG_IFACE
+check_wireguard() {
+  WG_IFACE=$(os_detect_vpn_interface 2>/dev/null || echo "")
+
+  if [[ -n "$WG_IFACE" ]]; then
+    WG_STATUS="connected"
+  else
+    WG_STATUS="disconnected"
+  fi
+}
+
+# Get public IP
+get_public_ip() {
+  curl -s --tlsv1.2 -m 5 "https://api.ipify.org" 2>/dev/null || echo "unknown"
+}
+
+# Get VPN endpoint from WireGuard config
+get_vpn_endpoint() {
+  if [[ -f /etc/wireguard/pia.conf ]]; then
+    grep "^Endpoint" /etc/wireguard/pia.conf 2>/dev/null | awk -F'= ' '{print $2}' | cut -d: -f1
+  fi
+}
+
+# Check if IP matches VPN server
+check_ip_match() {
+  local public_ip="$1"
+  local vpn_server="$2"
+
+  # For PIA, the public IP should be on the same /24 as the server
+  # This is a heuristic - actual IP will differ
+  if [[ -n "$vpn_server" && -n "$public_ip" && "$public_ip" != "unknown" ]]; then
+    local pub_prefix="${public_ip%.*}"
+    local vpn_prefix="${vpn_server%.*}"
+
+    # Check if in same rough network (not exact, but indicative)
+    # In practice, just checking we're not our original IP is enough
+    [[ "$public_ip" != "$(os_get_local_ip 2>/dev/null || echo '')" ]]
+  else
+    return 1
+  fi
+}
+
+# ============================================================================
+# DISPLAY
+# ============================================================================
+
+show_status() {
+  echo
+  echo "${C_BOLD}velum-vpn Status${C_RESET}"
+  echo "================"
+  echo
+
+  # WireGuard status
+  check_wireguard
+
+  echo "Connection:"
+  if [[ "$WG_STATUS" == "connected" ]]; then
+    echo "  Status:       ${C_GREEN}CONNECTED${C_RESET}"
+    echo "  Interface:    $WG_IFACE"
+
+    # Get endpoint
+    local endpoint
+    endpoint=$(get_vpn_endpoint)
+    [[ -n "$endpoint" ]] && echo "  VPN Server:   $endpoint"
+
+    # Get public IP
+    echo -n "  Public IP:    "
+    local public_ip
+    public_ip=$(get_public_ip)
+    if [[ "$public_ip" != "unknown" ]]; then
+      echo "${C_GREEN}$public_ip${C_RESET}"
+    else
+      echo "${C_YELLOW}Could not determine${C_RESET}"
+    fi
+
+    # WireGuard stats
+    if command -v wg >/dev/null 2>&1; then
+      local stats
+      stats=$(wg show pia 2>/dev/null || echo "")
+      if [[ -n "$stats" ]]; then
+        local rx tx handshake
+        rx=$(echo "$stats" | grep "transfer:" | awk '{print $2, $3}')
+        tx=$(echo "$stats" | grep "transfer:" | awk '{print $5, $6}')
+        handshake=$(echo "$stats" | grep "latest handshake:" | cut -d: -f2- | xargs)
+
+        [[ -n "$rx" ]] && echo "  Data RX:      $rx"
+        [[ -n "$tx" ]] && echo "  Data TX:      $tx"
+        [[ -n "$handshake" ]] && echo "  Last shake:   $handshake"
+      fi
+    fi
+  else
+    echo "  Status:       ${C_RED}DISCONNECTED${C_RESET}"
+  fi
+
+  echo
+
+  # Security status
+  echo "Security:"
+
+  # Kill switch
+  local ks_status
+  ks_status=$(os_killswitch_status 2>/dev/null || echo "unknown")
+  case "$ks_status" in
+    active)
+      local rule_count
+      rule_count=$(os_killswitch_rule_count 2>/dev/null || echo "?")
+      echo "  Kill switch:  ${C_GREEN}ACTIVE${C_RESET} ($rule_count rules)"
+      ;;
+    inactive)
+      echo "  Kill switch:  ${C_YELLOW}INACTIVE${C_RESET}"
+      ;;
+    *)
+      echo "  Kill switch:  ${C_DIM}Unknown${C_RESET}"
+      ;;
+  esac
+
+  # IPv6
+  if os_ipv6_enabled 2>/dev/null; then
+    echo "  IPv6:         ${C_YELLOW}ENABLED${C_RESET} (potential leak)"
+  else
+    echo "  IPv6:         ${C_GREEN}DISABLED${C_RESET}"
+  fi
+
+  # DNS
+  local dns_servers
+  dns_servers=$(os_get_dns 2>/dev/null | head -1)
+  if [[ "$dns_servers" == "10.0.0.243" || "$dns_servers" == "10.0.0.242" ]]; then
+    echo "  DNS:          ${C_GREEN}PIA${C_RESET} ($dns_servers)"
+  elif [[ -n "$dns_servers" ]]; then
+    echo "  DNS:          $dns_servers"
+  else
+    echo "  DNS:          ${C_DIM}System default${C_RESET}"
+  fi
+
+  echo
+
+  # Port forwarding
+  if [[ -f /tmp/velum-pf.pid ]]; then
+    local pf_pid
+    pf_pid=$(cat /tmp/velum-pf.pid 2>/dev/null || echo "")
+    if [[ -n "$pf_pid" ]] && kill -0 "$pf_pid" 2>/dev/null; then
+      echo "Port Forward:   ${C_GREEN}ACTIVE${C_RESET} (PID: $pf_pid)"
+    else
+      echo "Port Forward:   ${C_YELLOW}INACTIVE${C_RESET}"
+    fi
+  fi
+
+  echo
+
+  # Token status
+  echo "Authentication:"
+  local token_status
+  if check_token_expiry 2>/dev/null; then
+    echo "  Token:        ${C_GREEN}Valid${C_RESET}"
+  else
+    echo "  Token:        ${C_RED}Expired or missing${C_RESET}"
+  fi
+
+  echo
+}
+
+# ============================================================================
+# MAIN
+# ============================================================================
+
+main() {
+  show_status
+}
+
+main "$@"

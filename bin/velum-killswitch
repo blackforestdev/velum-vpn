@@ -1,0 +1,165 @@
+#!/usr/bin/env bash
+# velum-killswitch - Kill switch management wrapper
+# Provides CLI interface to OS-specific kill switch functions
+
+set -euo pipefail
+
+# ============================================================================
+# INITIALIZATION
+# ============================================================================
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+VELUM_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+export VELUM_ROOT
+
+# Source libraries
+source "$VELUM_ROOT/lib/velum-core.sh"
+source "$VELUM_ROOT/lib/os/detect.sh"
+
+# ============================================================================
+# USAGE
+# ============================================================================
+
+usage() {
+  echo "Usage: $0 <command> [options]"
+  echo ""
+  echo "Commands:"
+  echo "  enable    Enable kill switch (blocks non-VPN traffic)"
+  echo "  disable   Disable kill switch (restore normal traffic)"
+  echo "  status    Show kill switch status"
+  echo "  notify    Send VPN drop notification"
+  echo ""
+  echo "Options for 'enable':"
+  echo "  --vpn-ip <IP>         VPN server IP (required)"
+  echo "  --vpn-port <PORT>     VPN server port (default: 1337)"
+  echo "  --vpn-iface <IFACE>   VPN interface (default: auto-detect)"
+  echo "  --lan-policy <POLICY> LAN policy: block|detect|<CIDR>"
+  echo ""
+  echo "Examples:"
+  echo "  sudo $0 enable --vpn-ip 158.173.21.201 --lan-policy detect"
+  echo "  sudo $0 disable"
+  echo "  $0 status"
+}
+
+# ============================================================================
+# COMMANDS
+# ============================================================================
+
+cmd_enable() {
+  require_root
+
+  print_info "Enabling kill switch..."
+
+  if os_killswitch_enable "$@"; then
+    print_ok "Kill switch enabled!"
+    echo "Traffic is now blocked unless it goes through the VPN."
+    echo "IPv6 is blocked at the firewall level."
+  else
+    print_error "Failed to enable kill switch"
+    exit 1
+  fi
+}
+
+cmd_disable() {
+  require_root
+
+  print_info "Disabling kill switch..."
+
+  if os_killswitch_disable; then
+    print_ok "Kill switch disabled."
+    echo "Normal network traffic restored."
+  else
+    print_error "Failed to disable kill switch"
+    exit 1
+  fi
+}
+
+cmd_status() {
+  echo
+  echo "${C_BOLD}Kill Switch Status${C_RESET}"
+  echo "=================="
+  echo
+
+  local status
+  status=$(os_killswitch_status)
+
+  case "$status" in
+    active)
+      local rule_count
+      rule_count=$(os_killswitch_rule_count)
+      echo "Status:     ${C_GREEN}ACTIVE${C_RESET}"
+      echo "Rules:      $rule_count"
+      echo
+
+      # Show detected network info
+      local vpn_iface subnet
+      vpn_iface=$(os_detect_vpn_interface 2>/dev/null || echo "")
+      subnet=$(os_detect_subnet 2>/dev/null || echo "")
+
+      echo "Network:"
+      if [[ -n "$vpn_iface" ]]; then
+        echo "  VPN Interface: ${C_GREEN}$vpn_iface${C_RESET}"
+      else
+        echo "  VPN Interface: ${C_RED}Not found${C_RESET}"
+      fi
+
+      if [[ -n "$subnet" ]]; then
+        echo "  Local Subnet:  $subnet"
+      fi
+      ;;
+    inactive)
+      echo "Status:     ${C_YELLOW}INACTIVE${C_RESET}"
+      echo
+      echo "The kill switch is not active."
+      echo "Run 'sudo velum-killswitch enable ...' to enable."
+      ;;
+    *)
+      echo "Status:     ${C_RED}UNKNOWN${C_RESET}"
+      ;;
+  esac
+
+  echo
+}
+
+cmd_notify() {
+  os_notify "velum-vpn Alert" "VPN connection dropped! Kill switch is blocking all traffic." "Basso"
+}
+
+# ============================================================================
+# MAIN
+# ============================================================================
+
+main() {
+  if [[ $# -lt 1 ]]; then
+    usage
+    exit 1
+  fi
+
+  local cmd="$1"
+  shift
+
+  case "$cmd" in
+    enable)
+      cmd_enable "$@"
+      ;;
+    disable)
+      cmd_disable
+      ;;
+    status)
+      cmd_status
+      ;;
+    notify)
+      cmd_notify
+      ;;
+    -h|--help|help)
+      usage
+      ;;
+    *)
+      print_error "Unknown command: $cmd"
+      usage
+      exit 1
+      ;;
+  esac
+}
+
+main "$@"

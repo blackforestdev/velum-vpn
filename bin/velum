@@ -1,0 +1,99 @@
+#!/usr/bin/env bash
+# velum - Unified CLI for velum-vpn
+# Main entry point that dispatches to subcommands
+
+set -euo pipefail
+
+# ============================================================================
+# INITIALIZATION
+# ============================================================================
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+VELUM_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+export VELUM_ROOT
+
+# Version
+VELUM_VERSION="0.1.0-dev"
+
+# ============================================================================
+# USAGE
+# ============================================================================
+
+usage() {
+  cat << EOF
+velum-vpn v${VELUM_VERSION} - Security-focused VPN management
+
+Usage: velum <command> [options]
+
+Commands:
+  config      Configure VPN settings interactively
+  connect     Connect to VPN
+  disconnect  Disconnect from VPN
+  status      Show connection status
+  test        Test VPN connection for leaks
+  killswitch  Manage kill switch
+
+Options:
+  -h, --help     Show this help
+  -v, --version  Show version
+
+Examples:
+  velum config              # Configure VPN settings
+  sudo velum connect        # Connect to VPN
+  sudo velum disconnect     # Disconnect from VPN
+  velum status              # Check connection status
+  sudo velum test           # Test connection for leaks
+
+For command-specific help:
+  velum <command> --help
+
+EOF
+}
+
+# ============================================================================
+# MAIN
+# ============================================================================
+
+main() {
+  if [[ $# -lt 1 ]]; then
+    usage
+    exit 0
+  fi
+
+  local cmd="$1"
+  shift
+
+  case "$cmd" in
+    config)
+      exec "$SCRIPT_DIR/velum-config" "$@"
+      ;;
+    connect)
+      exec "$SCRIPT_DIR/velum-connect" "$@"
+      ;;
+    disconnect)
+      exec "$SCRIPT_DIR/velum-disconnect" "$@"
+      ;;
+    status)
+      exec "$SCRIPT_DIR/velum-status" "$@"
+      ;;
+    test)
+      exec "$SCRIPT_DIR/velum-test" "$@"
+      ;;
+    killswitch|ks)
+      exec "$SCRIPT_DIR/velum-killswitch" "$@"
+      ;;
+    -v|--version|version)
+      echo "velum-vpn version $VELUM_VERSION"
+      ;;
+    -h|--help|help)
+      usage
+      ;;
+    *)
+      echo "Unknown command: $cmd" >&2
+      echo "Run 'velum --help' for usage." >&2
+      exit 1
+      ;;
+  esac
+}
+
+main "$@"

@@ -1,0 +1,727 @@
+#!/usr/bin/env bash
+# velum-config - Interactive VPN configuration for velum-vpn
+# Implements the 5-phase configuration flow:
+#   Phase 1: Authentication
+#   Phase 2: Security Profile
+#   Phase 3: Connection Features
+#   Phase 4: Server Selection
+#   Phase 5: Connect
+
+set -euo pipefail
+
+# ============================================================================
+# INITIALIZATION
+# ============================================================================
+
+# Detect script location and VELUM_ROOT
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+VELUM_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+export VELUM_ROOT
+
+# Source libraries
+source "$VELUM_ROOT/lib/velum-core.sh"
+source "$VELUM_ROOT/lib/velum-security.sh"
+source "$VELUM_ROOT/lib/os/detect.sh"
+source "$VELUM_ROOT/lib/providers/provider-base.sh"
+
+# Dead-man switch
+security_check "$0" || exit 1
+
+# ============================================================================
+# CONFIGURATION STATE
+# ============================================================================
+
+# These variables hold the configuration built through the phases
+declare -A CONFIG=(
+  # Provider
+  [provider]=""
+
+  # Credentials (cleared after auth)
+  [username]=""
+  [password]=""
+  [token]=""
+
+  # Security
+  [killswitch]="true"
+  [killswitch_lan]="detect"
+  [ipv6_disabled]="true"
+  [use_provider_dns]="true"
+
+  # Features
+  [dip_enabled]="false"
+  [dip_token]=""
+  [port_forward]="false"
+
+  # Server
+  [allow_geo]="false"
+  [server_auto]="true"
+  [max_latency]="0.05"
+  [selected_region]=""
+  [selected_ip]=""
+  [selected_hostname]=""
+)
+
+# Configuration file path (from velum-core.sh)
+CONFIG_FILE="$VELUM_CONFIG_FILE"
+
+# ============================================================================
+# UTILITY FUNCTIONS
+# ============================================================================
+
+# Load existing configuration if present
+load_config() {
+  if [[ -f "$CONFIG_FILE" ]]; then
+    log_info "Loading existing configuration..."
+    # Source config file (it sets CONFIG array values)
+    # shellcheck source=/dev/null
+    source "$CONFIG_FILE" 2>/dev/null || true
+  fi
+}
+
+# Save configuration to file
+save_config() {
+  log_info "Saving configuration..."
+
+  # Initialize config directories with proper permissions
+  init_config_dirs
+
+  {
+    echo "# velum-vpn configuration"
+    echo "# Generated: $(date)"
+    echo "# Location: $CONFIG_FILE"
+    echo ""
+    echo "# Provider"
+    echo "CONFIG[provider]=\"${CONFIG[provider]}\""
+    echo ""
+    echo "# Security"
+    echo "CONFIG[killswitch]=\"${CONFIG[killswitch]}\""
+    echo "CONFIG[killswitch_lan]=\"${CONFIG[killswitch_lan]}\""
+    echo "CONFIG[ipv6_disabled]=\"${CONFIG[ipv6_disabled]}\""
+    echo "CONFIG[use_provider_dns]=\"${CONFIG[use_provider_dns]}\""
+    echo ""
+    echo "# Features"
+    echo "CONFIG[dip_enabled]=\"${CONFIG[dip_enabled]}\""
+    echo "CONFIG[dip_token]=\"${CONFIG[dip_token]}\""
+    echo "CONFIG[port_forward]=\"${CONFIG[port_forward]}\""
+    echo ""
+    echo "# Server"
+    echo "CONFIG[allow_geo]=\"${CONFIG[allow_geo]}\""
+    echo "CONFIG[server_auto]=\"${CONFIG[server_auto]}\""
+    echo "CONFIG[max_latency]=\"${CONFIG[max_latency]}\""
+    echo "CONFIG[selected_region]=\"${CONFIG[selected_region]}\""
+    echo "CONFIG[selected_ip]=\"${CONFIG[selected_ip]}\""
+    echo "CONFIG[selected_hostname]=\"${CONFIG[selected_hostname]}\""
+  } > "$CONFIG_FILE"
+
+  chmod 600 "$CONFIG_FILE"
+
+  # Fix ownership if running as root via sudo
+  if [[ -n "${SUDO_USER:-}" ]]; then
+    local sudo_uid sudo_gid
+    sudo_uid=$(id -u "$SUDO_USER" 2>/dev/null)
+    sudo_gid=$(id -g "$SUDO_USER" 2>/dev/null)
+    if [[ -n "$sudo_uid" && -n "$sudo_gid" ]]; then
+      chown "$sudo_uid:$sudo_gid" "$CONFIG_FILE"
+    fi
+  fi
+}
+
+# ============================================================================
+# PHASE 0: PROVIDER SELECTION
+# ============================================================================
+
+phase_provider() {
+  print_section "PROVIDER SELECTION"
+
+  echo "Available VPN providers:"
+  echo
+
+  # List available providers
+  local providers=()
+  local i=1
+  while IFS= read -r p; do
+    providers+=("$p")
+    local desc=""
+    case "$p" in
+      pia) desc="Private Internet Access - Port forwarding, Dedicated IP" ;;
+      mullvad) desc="Mullvad VPN - Privacy-focused, no account info required" ;;
+      *) desc="VPN Provider" ;;
+    esac
+    echo "  $i. ${p^^} - $desc"
+    ((i++))
+  done < <(list_providers)
+
+  echo
+
+  # Check for existing config
+  if [[ -n "${CONFIG[provider]}" ]]; then
+    print_info "Current provider: ${CONFIG[provider]^^}"
+    if ask_yn "Keep current provider?" "y"; then
+      return
+    fi
+  fi
+
+  # Select provider
+  local choice
+  read -r -p "Select provider [1-${#providers[@]}]: " choice
+
+  if [[ "$choice" =~ ^[0-9]+$ ]] && [[ "$choice" -ge 1 ]] && [[ "$choice" -le "${#providers[@]}" ]]; then
+    CONFIG[provider]="${providers[$((choice-1))]}"
+  else
+    CONFIG[provider]="pia"  # Default
+  fi
+
+  print_ok "Selected: ${CONFIG[provider]^^}"
+  echo
+}
+
+# ============================================================================
+# PHASE 1: AUTHENTICATION
+# ============================================================================
+
+phase_authentication() {
+  print_section "PHASE 1: AUTHENTICATION"
+
+  # Load provider
+  load_provider "${CONFIG[provider]}" || exit 1
+  echo "Provider: $(provider_name)"
+  echo
+
+  # Get auth type for this provider
+  local auth_type
+  auth_type=$(provider_auth_type)
+
+  # Check for existing token
+  if check_token_expiry; then
+    local token
+    token=$(read_token)
+    if [[ -n "$token" ]]; then
+      print_ok "Valid authentication token found."
+      CONFIG[token]="$token"
+
+      if ! ask_yn "Use existing token?" "y"; then
+        CONFIG[token]=""
+      fi
+    fi
+  fi
+
+  # Need to authenticate?
+  if [[ -z "${CONFIG[token]}" ]]; then
+    case "$auth_type" in
+      username_password)
+        _auth_username_password
+        ;;
+      account_number)
+        _auth_account_number
+        ;;
+      *)
+        print_error "Unknown authentication type: $auth_type"
+        exit 1
+        ;;
+    esac
+  fi
+
+  echo
+}
+
+# Username/password authentication (PIA style)
+_auth_username_password() {
+  local creds_file
+  creds_file="$(os_get_home)/.${CONFIG[provider]}_credentials"
+
+  # Try to load credentials from file
+  if [[ -f "$creds_file" ]]; then
+    print_info "Found credentials file: $creds_file"
+    CONFIG[username]=$(sed -n '1p' "$creds_file" 2>/dev/null || echo "")
+    CONFIG[password]=$(sed -n '2p' "$creds_file" 2>/dev/null || echo "")
+  fi
+
+  # Prompt for credentials if not loaded
+  if [[ -z "${CONFIG[username]}" ]]; then
+    local prompt="Username"
+    [[ "${CONFIG[provider]}" == "pia" ]] && prompt="PIA username (p#######)"
+    CONFIG[username]=$(ask_input "$prompt")
+  fi
+
+  if [[ -z "${CONFIG[password]}" ]]; then
+    CONFIG[password]=$(ask_password "Password")
+  fi
+
+  # Authenticate
+  local auth_result
+  if auth_result=$(provider_authenticate "${CONFIG[username]}" "${CONFIG[password]}"); then
+    CONFIG[token]=$(echo "$auth_result" | jq -r '.token // .access_token')
+    local expiry
+    expiry=$(echo "$auth_result" | jq -r '.expires_at // .expiry // "unknown"')
+    print_ok "Authentication successful!"
+    [[ "$expiry" != "unknown" && "$expiry" != "null" ]] && echo "Token expires: $expiry"
+  else
+    print_error "Authentication failed. Please check your credentials."
+    exit 1
+  fi
+
+  # Clear credentials from memory
+  CONFIG[username]=""
+  CONFIG[password]=""
+}
+
+# Account number authentication (Mullvad style)
+_auth_account_number() {
+  local creds_file
+  creds_file="$(os_get_home)/.${CONFIG[provider]}_credentials"
+
+  # Try to load account from file
+  if [[ -f "$creds_file" ]]; then
+    print_info "Found credentials file: $creds_file"
+    CONFIG[username]=$(sed -n '1p' "$creds_file" 2>/dev/null || echo "")
+  fi
+
+  # Prompt for account number if not loaded
+  if [[ -z "${CONFIG[username]}" ]]; then
+    echo "Enter your Mullvad account number (16 digits)."
+    echo "You can find this at https://mullvad.net/account"
+    echo
+    CONFIG[username]=$(ask_input "Account number")
+  fi
+
+  # Authenticate
+  local auth_result
+  if auth_result=$(provider_authenticate "${CONFIG[username]}" ""); then
+    CONFIG[token]=$(echo "$auth_result" | jq -r '.access_token // .token')
+    local expiry
+    expiry=$(echo "$auth_result" | jq -r '.expires_at // .expiry // "unknown"')
+    print_ok "Authentication successful!"
+    [[ "$expiry" != "unknown" && "$expiry" != "null" ]] && echo "Token expires: $expiry"
+  else
+    print_error "Authentication failed. Please check your account number."
+    exit 1
+  fi
+
+  # Clear account number from config (it's saved separately)
+  CONFIG[username]=""
+}
+
+# ============================================================================
+# PHASE 2: SECURITY PROFILE
+# ============================================================================
+
+phase_security() {
+  print_section "PHASE 2: SECURITY PROFILE"
+
+  # Explain kill switch
+  echo "The kill switch blocks ALL internet traffic if the VPN drops,"
+  echo "preventing your real IP from being exposed."
+  echo
+  echo "When enabled, the kill switch will also:"
+  echo "  - Block IPv6 traffic at the firewall level"
+  echo "  - Disable IPv6 on network interfaces"
+  echo "  - Default to using $(provider_name)'s DNS servers"
+  echo
+
+  # Kill switch is the PRIMARY security decision
+  if ask_yn "Enable kill switch?" "y"; then
+    CONFIG[killswitch]="true"
+    CONFIG[ipv6_disabled]="true"  # Auto-set when kill switch enabled
+
+    print_ok "Kill switch will be enabled."
+    echo "  IPv6 protection: Enabled (interface + firewall)"
+    echo
+
+    # LAN policy (only asked if kill switch enabled)
+    echo "LAN Policy: Choose how to handle local network traffic."
+    echo "  block  - Block all LAN traffic (most secure)"
+    echo "  detect - Auto-detect and allow your local subnet"
+    echo "  CIDR   - Specify a custom subnet (e.g., 10.0.1.0/24)"
+    echo
+
+    local lan_choice
+    lan_choice=$(ask_input "LAN policy" "detect")
+    CONFIG[killswitch_lan]="$lan_choice"
+
+    if [[ "$lan_choice" == "detect" ]]; then
+      local detected
+      detected=$(os_detect_subnet 2>/dev/null || echo "")
+      if [[ -n "$detected" ]]; then
+        echo "Detected local subnet: $detected"
+      else
+        print_warn "Could not detect local subnet. LAN traffic may be blocked."
+      fi
+    fi
+
+  else
+    CONFIG[killswitch]="false"
+    print_warn "Kill switch DISABLED - VPN drops may expose your real IP!"
+    echo
+
+    # IPv6 asked separately when kill switch is off
+    echo "IPv6 can leak your real IP even when VPN is connected."
+    if ask_yn "Disable IPv6?" "y"; then
+      CONFIG[ipv6_disabled]="true"
+    else
+      CONFIG[ipv6_disabled]="false"
+    fi
+  fi
+
+  echo
+
+  # DNS (always asked, but with smart default)
+  echo "Using third-party DNS could allow DNS monitoring."
+  local dns_default="y"
+  if [[ "${CONFIG[killswitch]}" == "true" ]]; then
+    echo "(Recommended: Yes, since kill switch is enabled)"
+  fi
+
+  if ask_yn "Use $(provider_name) DNS servers?" "$dns_default"; then
+    CONFIG[use_provider_dns]="true"
+  else
+    CONFIG[use_provider_dns]="false"
+    print_warn "Using system DNS - DNS queries may be visible to ISP."
+  fi
+
+  echo
+}
+
+# ============================================================================
+# PHASE 3: CONNECTION FEATURES
+# ============================================================================
+
+phase_features() {
+  print_section "PHASE 3: CONNECTION FEATURES"
+
+  # Dedicated IP
+  if provider_supports_dip; then
+    echo "Dedicated IP provides a static IP address for your connection."
+    if ask_yn "Use Dedicated IP?" "n"; then
+      CONFIG[dip_enabled]="true"
+
+      local dip_token
+      dip_token=$(ask_input "DIP token")
+
+      # Validate DIP token
+      if provider_get_dip "$dip_token" >/dev/null 2>&1; then
+        CONFIG[dip_token]="$dip_token"
+        print_ok "DIP token validated successfully!"
+
+        # DIP may not support port forwarding
+        local dip_info
+        dip_info=$(provider_get_dip "$dip_token")
+        local dip_pf
+        dip_pf=$(echo "$dip_info" | jq -r '.port_forward // false')
+        if [[ "$dip_pf" != "true" ]]; then
+          print_warn "Note: Your DIP does not support port forwarding."
+          CONFIG[port_forward]="false"
+        fi
+      else
+        print_error "Invalid DIP token. Continuing without DIP."
+        CONFIG[dip_enabled]="false"
+      fi
+    fi
+    echo
+  fi
+
+  # Port forwarding (skip if DIP doesn't support it)
+  if [[ "${CONFIG[dip_enabled]}" != "true" ]] || [[ -z "${CONFIG[dip_token]}" ]]; then
+    if provider_supports_pf; then
+      echo "Port forwarding allows incoming connections to your device."
+      echo "Note: Not available on US servers."
+      if ask_yn "Enable port forwarding?" "n"; then
+        CONFIG[port_forward]="true"
+      else
+        CONFIG[port_forward]="false"
+      fi
+      echo
+    fi
+  fi
+}
+
+# ============================================================================
+# PHASE 4: SERVER SELECTION
+# ============================================================================
+
+phase_server() {
+  print_section "PHASE 4: SERVER SELECTION"
+
+  # Skip if DIP is configured (DIP has fixed server)
+  if [[ "${CONFIG[dip_enabled]}" == "true" ]] && [[ -n "${CONFIG[dip_token]}" ]]; then
+    local dip_info
+    dip_info=$(provider_get_dip "${CONFIG[dip_token]}")
+    CONFIG[selected_ip]=$(echo "$dip_info" | jq -r '.ip')
+    CONFIG[selected_hostname]=$(echo "$dip_info" | jq -r '.cn')
+    CONFIG[selected_region]="dip"
+    print_info "Using Dedicated IP server: ${CONFIG[selected_ip]}"
+    return
+  fi
+
+  # Geo servers (PIA-specific feature)
+  if [[ "${CONFIG[provider]}" == "pia" ]]; then
+    echo "Geo-located servers appear to be in a different country than"
+    echo "their actual physical location (for censorship bypass)."
+    if ask_yn "Allow geo-located servers?" "n"; then
+      CONFIG[allow_geo]="true"
+    else
+      CONFIG[allow_geo]="false"
+    fi
+    echo
+  fi
+
+  # Server selection method
+  echo "Server selection:"
+  echo "  1. Auto (lowest latency)"
+  echo "  2. Manual selection"
+  echo
+
+  local method
+  method=$(ask_choice "Select method" "Auto (lowest latency)" "Manual selection")
+
+  if [[ "$method" == "Auto"* ]]; then
+    CONFIG[server_auto]="true"
+    print_info "Will select server with lowest latency automatically."
+  else
+    CONFIG[server_auto]="false"
+
+    # Latency threshold
+    local threshold
+    threshold=$(ask_input "Maximum latency (seconds)" "0.05")
+    CONFIG[max_latency]="$threshold"
+
+    # Get and display server list
+    echo
+    echo "Fetching server list..."
+
+    local filters=""
+    [[ "${CONFIG[allow_geo]}" != "true" ]] && filters="--geo false"
+    [[ "${CONFIG[port_forward]}" == "true" ]] && filters="$filters --port-forward true"
+
+    local servers
+    # shellcheck disable=SC2086
+    servers=$(provider_filter_servers $filters)
+
+    # Display servers with latency
+    echo
+    echo "Available servers:"
+    echo "-----------------"
+
+    local i=1
+    local region_ids=()
+    local region_names=()
+    local region_ips=()
+    local region_hostnames=()
+
+    # Handle different provider server list formats
+    if [[ "${CONFIG[provider]}" == "mullvad" ]]; then
+      # Mullvad format: array of servers with hostname, country_name, city_name, ipv4_addr_in
+      while IFS= read -r server; do
+        local hostname name ip
+        hostname=$(echo "$server" | jq -r '.hostname')
+        name=$(echo "$server" | jq -r '"\(.country_name) - \(.city_name)"')
+        ip=$(echo "$server" | jq -r '.ipv4_addr_in')
+
+        [[ -z "$ip" || "$ip" == "null" ]] && continue
+
+        # Test latency
+        local latency
+        latency=$(provider_test_latency "$hostname" 2>/dev/null || echo "N/A")
+
+        printf "%3d. %-35s  %10s ms\n" "$i" "$name ($hostname)" "$latency"
+
+        region_ids+=("$hostname")
+        region_names+=("$name")
+        region_ips+=("$ip")
+        region_hostnames+=("$hostname")
+
+        ((i++))
+        [[ $i -gt 20 ]] && break
+      done < <(echo "$servers" | jq -c '.[]')
+    else
+      # PIA format: regions array with id, name, servers.wg[0]
+      # First pass: test latency for all servers and collect results
+      echo "Testing regions that respond faster than ${threshold} seconds..."
+      echo
+
+      local latency_results=()
+      local total_regions
+      total_regions=$(echo "$servers" | jq 'length')
+
+      while IFS= read -r region; do
+        local id name ip hostname
+        id=$(echo "$region" | jq -r '.id')
+        name=$(echo "$region" | jq -r '.name')
+        ip=$(echo "$region" | jq -r '.servers.wg[0].ip // empty')
+        hostname=$(echo "$region" | jq -r '.servers.wg[0].cn // empty')
+
+        [[ -z "$ip" ]] && continue
+
+        # Test latency
+        local latency
+        latency=$(provider_test_latency "$id" 2>/dev/null || echo "")
+
+        # Skip if latency is empty or not a valid number
+        if [[ -z "$latency" ]] || ! [[ "$latency" =~ ^[0-9.]+$ ]]; then
+          continue
+        fi
+
+        # Convert latency from ms to seconds
+        local latency_sec
+        latency_sec=$(awk "BEGIN {printf \"%.6f\", $latency/1000}")
+
+        # Compare against threshold (both in seconds)
+        local threshold_val
+        threshold_val=$(awk "BEGIN {printf \"%.6f\", $threshold}")
+
+        # Check if latency is within threshold using awk (avoids bc dependency)
+        if awk "BEGIN {exit !($latency_sec <= $threshold_val)}"; then
+          echo "Got latency ${latency_sec}s for region: $name"
+          # Store as: latency_ms|id|name|ip|hostname
+          latency_results+=("${latency}|${id}|${name}|${ip}|${hostname}")
+        fi
+      done < <(echo "$servers" | jq -c '.[]')
+
+      echo
+
+      if [[ ${#latency_results[@]} -eq 0 ]]; then
+        print_warn "No servers found within ${threshold}s latency threshold."
+        print_info "Try increasing the maximum latency value."
+        CONFIG[server_auto]="true"
+        return
+      fi
+
+      # Sort results by latency (numerically)
+      IFS=$'\n' sorted_results=($(printf '%s\n' "${latency_results[@]}" | sort -t'|' -k1 -n))
+      unset IFS
+
+      echo "Ordered list of servers with latency less than ${threshold} seconds:"
+      echo
+
+      for result in "${sorted_results[@]}"; do
+        local latency_ms id name ip hostname latency_sec
+        IFS='|' read -r latency_ms id name ip hostname <<< "$result"
+        latency_sec=$(echo "$latency_ms" | awk '{printf "%.6f", $1/1000}')
+
+        printf "%3d : %.6f %-20s %20s - %s\n" "$i" "$latency_sec" "$ip" "$id" "$name"
+
+        region_ids+=("$id")
+        region_names+=("$name")
+        region_ips+=("$ip")
+        region_hostnames+=("$hostname")
+        ((i++))
+      done
+    fi
+
+    echo
+    local choice
+    read -r -p "Select server number [1-$((i-1))]: " choice
+
+    if [[ "$choice" =~ ^[0-9]+$ ]] && [[ "$choice" -ge 1 ]] && [[ "$choice" -lt "$i" ]]; then
+      local idx=$((choice - 1))
+      CONFIG[selected_region]="${region_ids[$idx]}"
+      CONFIG[selected_ip]="${region_ips[$idx]}"
+      CONFIG[selected_hostname]="${region_hostnames[$idx]}"
+      print_ok "Selected: ${region_names[$idx]}"
+    else
+      print_error "Invalid selection. Using auto mode."
+      CONFIG[server_auto]="true"
+    fi
+  fi
+
+  echo
+}
+
+# ============================================================================
+# PHASE 5: SUMMARY & CONNECT
+# ============================================================================
+
+phase_summary() {
+  print_section "CONFIGURATION SUMMARY"
+
+  echo "Provider:       ${C_BOLD}$(provider_name)${C_RESET}"
+  echo
+
+  echo "Security:"
+  if [[ "${CONFIG[killswitch]}" == "true" ]]; then
+    echo "  Kill switch:    ${C_GREEN}ENABLED${C_RESET} (LAN: ${CONFIG[killswitch_lan]})"
+  else
+    echo "  Kill switch:    ${C_RED}DISABLED${C_RESET}"
+  fi
+
+  if [[ "${CONFIG[ipv6_disabled]}" == "true" ]]; then
+    echo "  IPv6:           ${C_GREEN}Disabled (interface + firewall)${C_RESET}"
+  else
+    echo "  IPv6:           ${C_YELLOW}Enabled (may leak)${C_RESET}"
+  fi
+
+  if [[ "${CONFIG[use_provider_dns]}" == "true" ]]; then
+    local dns_server
+    dns_server=$(provider_get_dns | head -1)
+    echo "  DNS:            $(provider_name) ($dns_server)"
+  else
+    echo "  DNS:            System default"
+  fi
+
+  echo
+  echo "Connection:"
+  echo "  Protocol:       WireGuard"
+
+  if [[ "${CONFIG[dip_enabled]}" == "true" ]]; then
+    echo "  Server:         DIP (${CONFIG[selected_ip]})"
+  elif [[ "${CONFIG[server_auto]}" == "true" ]]; then
+    echo "  Server:         Auto (lowest latency)"
+  else
+    echo "  Server:         ${CONFIG[selected_region]} (${CONFIG[selected_ip]})"
+  fi
+
+  if [[ "${CONFIG[port_forward]}" == "true" ]]; then
+    echo "  Port forward:   Yes"
+  else
+    echo "  Port forward:   No"
+  fi
+
+  echo
+  echo "Press Enter to save configuration, or Ctrl+C to abort..."
+  read -r
+
+  save_config
+  print_ok "Configuration saved to $CONFIG_FILE"
+  echo
+  echo "To connect, run:"
+  echo "  ${C_GREEN}sudo velum-connect${C_RESET}"
+  echo
+}
+
+# ============================================================================
+# MAIN
+# ============================================================================
+
+main() {
+  echo
+  echo "${C_BOLD}velum-vpn Configuration${C_RESET}"
+  echo "========================"
+  echo
+
+  # Migrate from legacy location if needed
+  migrate_legacy_config
+
+  # Check requirements
+  check_os_requirements || exit 1
+
+  # Check root for operations that need it
+  if [[ "${CONFIG[killswitch]}" == "true" ]] || [[ "${CONFIG[ipv6_disabled]}" == "true" ]]; then
+    if ! is_root; then
+      print_warn "Note: Kill switch and IPv6 changes require root privileges."
+      print_warn "You will be prompted for sudo password during connection."
+    fi
+  fi
+
+  # Load existing config
+  load_config
+
+  # Run phases
+  phase_provider
+  phase_authentication
+  phase_security
+  phase_features
+  phase_server
+  phase_summary
+}
+
+# Run main
+main "$@"

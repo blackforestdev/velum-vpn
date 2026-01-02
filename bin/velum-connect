@@ -1,0 +1,416 @@
+#!/usr/bin/env bash
+# velum-connect - Connect to VPN using velum configuration
+# Handles: server selection, WireGuard setup, kill switch, DNS
+
+set -euo pipefail
+
+# ============================================================================
+# INITIALIZATION
+# ============================================================================
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+VELUM_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+export VELUM_ROOT
+
+# Source libraries
+source "$VELUM_ROOT/lib/velum-core.sh"
+source "$VELUM_ROOT/lib/velum-security.sh"
+source "$VELUM_ROOT/lib/os/detect.sh"
+source "$VELUM_ROOT/lib/providers/provider-base.sh"
+
+# Dead-man switch
+security_check "$0" || exit 1
+
+# ============================================================================
+# CONFIGURATION
+# ============================================================================
+
+# WireGuard config path
+WG_CONF_PATH="/etc/wireguard/pia.conf"
+
+# Configuration file (from velum-core.sh)
+CONFIG_FILE="$VELUM_CONFIG_FILE"
+
+# Configuration array
+declare -A CONFIG
+
+# Load configuration
+load_config() {
+  if [[ ! -f "$CONFIG_FILE" ]]; then
+    print_error "No configuration found. Run velum-config first."
+    exit 1
+  fi
+
+  # shellcheck source=/dev/null
+  source "$CONFIG_FILE"
+
+  # Validate required settings
+  if [[ -z "${CONFIG[provider]:-}" ]]; then
+    print_error "Invalid configuration. Run velum-config again."
+    exit 1
+  fi
+}
+
+# ============================================================================
+# SERVER SELECTION
+# ============================================================================
+
+# Find best server by latency
+find_best_server() {
+  local allow_geo="${CONFIG[allow_geo]:-false}"
+  local require_pf="${CONFIG[port_forward]:-false}"
+  local max_latency="${CONFIG[max_latency]:-0.05}"
+
+  log_info "Finding best server..."
+
+  local filters=""
+  [[ "$allow_geo" != "true" ]] && filters="--geo false"
+  [[ "$require_pf" == "true" ]] && filters="$filters --port-forward true"
+
+  local servers
+  # shellcheck disable=SC2086
+  servers=$(provider_filter_servers $filters) || {
+    print_error "Failed to fetch server list"
+    exit 1
+  }
+
+  local best_region=""
+  local best_ip=""
+  local best_hostname=""
+  local best_latency=999999
+
+  # Test up to 10 servers
+  local count=0
+  while IFS= read -r region; do
+    local id name ip hostname latency
+    id=$(echo "$region" | jq -r '.id')
+    name=$(echo "$region" | jq -r '.name')
+    ip=$(echo "$region" | jq -r '.servers.wg[0].ip // empty')
+    hostname=$(echo "$region" | jq -r '.servers.wg[0].cn // empty')
+
+    [[ -z "$ip" ]] && continue
+
+    echo -n "  Testing $name... "
+    latency=$(provider_test_latency "$id" 2>/dev/null || echo "999999")
+    echo "${latency}ms"
+
+    # Compare as integers (multiply by 1000)
+    local latency_int=${latency%.*}
+    local best_int=${best_latency%.*}
+
+    if [[ "$latency_int" -lt "$best_int" ]]; then
+      best_region="$id"
+      best_ip="$ip"
+      best_hostname="$hostname"
+      best_latency="$latency"
+    fi
+
+    ((count++))
+    [[ $count -ge 10 ]] && break
+  done < <(echo "$servers" | jq -c '.[]')
+
+  if [[ -z "$best_ip" ]]; then
+    print_error "No suitable server found"
+    exit 1
+  fi
+
+  print_ok "Best server: $best_region (${best_latency}ms)"
+
+  # Set selected server
+  CONFIG[selected_region]="$best_region"
+  CONFIG[selected_ip]="$best_ip"
+  CONFIG[selected_hostname]="$best_hostname"
+}
+
+# ============================================================================
+# WIREGUARD CONNECTION
+# ============================================================================
+
+# Generate WireGuard keypair
+generate_wg_keys() {
+  log_info "Generating WireGuard keys..."
+
+  WG_PRIVATE_KEY=$(wg genkey)
+  WG_PUBLIC_KEY=$(echo "$WG_PRIVATE_KEY" | wg pubkey)
+
+  # Mark for cleanup
+  mark_sensitive WG_PRIVATE_KEY
+}
+
+# Create WireGuard configuration file
+create_wg_config() {
+  local peer_ip="$1"
+  local server_key="$2"
+  local server_port="$3"
+  local server_ip="$4"
+  local dns_server="${5:-}"
+
+  log_info "Creating WireGuard configuration..."
+
+  # Ensure directory exists with proper permissions
+  mkdir -p "$(dirname "$WG_CONF_PATH")"
+  chmod 700 "$(dirname "$WG_CONF_PATH")"
+
+  # Build config
+  local config="[Interface]
+Address = $peer_ip
+PrivateKey = $WG_PRIVATE_KEY"
+
+  # Add DNS if using PIA DNS
+  if [[ -n "$dns_server" ]]; then
+    config="$config
+DNS = $dns_server"
+  fi
+
+  # Add PostUp for kill switch
+  if [[ "${CONFIG[killswitch]:-false}" == "true" ]]; then
+    local ks_cmd="$VELUM_ROOT/bin/velum-killswitch enable"
+    ks_cmd="$ks_cmd --vpn-ip $server_ip"
+    ks_cmd="$ks_cmd --vpn-port $server_port"
+    ks_cmd="$ks_cmd --vpn-iface %i"
+    ks_cmd="$ks_cmd --lan-policy ${CONFIG[killswitch_lan]:-detect}"
+
+    config="$config
+PostUp = $ks_cmd"
+  fi
+
+  # Add PostDown for kill switch
+  if [[ "${CONFIG[killswitch]:-false}" == "true" ]]; then
+    config="$config
+PostDown = $VELUM_ROOT/bin/velum-killswitch disable
+PostDown = $VELUM_ROOT/bin/velum-killswitch notify"
+  fi
+
+  # Add DNS route fix for macOS
+  if [[ "$(uname)" == "Darwin" && -n "$dns_server" ]]; then
+    config="$config
+PostUp = route -q -n add -host $dns_server -interface %i 2>/dev/null || true"
+  fi
+
+  # Peer section
+  config="$config
+
+[Peer]
+PublicKey = $server_key
+AllowedIPs = 0.0.0.0/0
+Endpoint = $server_ip:$server_port
+PersistentKeepalive = 25"
+
+  # Write config with secure permissions
+  (
+    umask 077
+    echo "$config" > "$WG_CONF_PATH"
+  )
+  chmod 600 "$WG_CONF_PATH"
+
+  print_ok "WireGuard config written to $WG_CONF_PATH"
+}
+
+# Bring up WireGuard interface
+start_wireguard() {
+  log_info "Starting WireGuard..."
+
+  # Bring down existing connection if any
+  wg-quick down pia 2>/dev/null || true
+
+  # Bring up new connection
+  if ! wg-quick up pia; then
+    print_error "Failed to start WireGuard"
+    exit 1
+  fi
+
+  print_ok "WireGuard interface is up!"
+}
+
+# ============================================================================
+# PRE-CONNECTION SETUP
+# ============================================================================
+
+# Disable IPv6 if configured
+setup_ipv6() {
+  if [[ "${CONFIG[ipv6_disabled]:-false}" == "true" ]]; then
+    log_info "Disabling IPv6 on interfaces..."
+    if os_disable_ipv6; then
+      print_ok "IPv6 disabled on all interfaces"
+    else
+      print_warn "Could not disable IPv6 on some interfaces"
+    fi
+  fi
+}
+
+# ============================================================================
+# PORT FORWARDING
+# ============================================================================
+
+start_port_forwarding() {
+  if [[ "${CONFIG[port_forward]:-false}" != "true" ]]; then
+    return 0
+  fi
+
+  log_info "Setting up port forwarding..."
+
+  local server_ip="${CONFIG[selected_ip]}"
+  local hostname="${CONFIG[selected_hostname]}"
+
+  # Get signature
+  local pf_response
+  pf_response=$(provider_enable_pf "$server_ip" "$hostname") || {
+    print_error "Failed to get port forwarding signature"
+    return 1
+  }
+
+  local payload signature port expires_at
+  payload=$(echo "$pf_response" | jq -r '.payload')
+  signature=$(echo "$pf_response" | jq -r '.signature')
+  port=$(echo "$payload" | base64 -d | jq -r '.port')
+  expires_at=$(echo "$payload" | base64 -d | jq -r '.expires_at')
+
+  print_ok "Port forwarding enabled!"
+  echo
+  echo "  Forwarded port: ${C_GREEN}$port${C_RESET}"
+  echo "  Expires: $expires_at"
+  echo
+
+  # Start refresh loop in background
+  (
+    while true; do
+      sleep 900  # 15 minutes
+      provider_refresh_pf "$server_ip" "$hostname" "$payload" "$signature" >/dev/null 2>&1 || break
+    done
+  ) &
+
+  PF_PID=$!
+  echo "$PF_PID" > /tmp/velum-pf.pid
+  echo "Port forwarding keepalive running (PID: $PF_PID)"
+}
+
+# ============================================================================
+# CONNECTION STATUS
+# ============================================================================
+
+show_connection_info() {
+  echo
+  print_section "CONNECTION ESTABLISHED"
+
+  echo "Server:     ${CONFIG[selected_region]} (${CONFIG[selected_ip]})"
+
+  # Get assigned IP
+  local vpn_iface
+  vpn_iface=$(os_detect_vpn_interface)
+  if [[ -n "$vpn_iface" ]]; then
+    echo "Interface:  $vpn_iface"
+  fi
+
+  # Security status
+  echo
+  echo "Security:"
+  if [[ "${CONFIG[killswitch]:-false}" == "true" ]]; then
+    echo "  Kill switch:  ${C_GREEN}ACTIVE${C_RESET}"
+  else
+    echo "  Kill switch:  ${C_YELLOW}DISABLED${C_RESET}"
+  fi
+
+  if [[ "${CONFIG[ipv6_disabled]:-false}" == "true" ]]; then
+    echo "  IPv6:         ${C_GREEN}BLOCKED${C_RESET}"
+  fi
+
+  if [[ "${CONFIG[use_provider_dns]:-false}" == "true" ]]; then
+    echo "  DNS:          PIA (10.0.0.243)"
+  fi
+
+  echo
+  echo "To disconnect:"
+  echo "  ${C_GREEN}sudo velum-disconnect${C_RESET}"
+  echo
+  echo "To check status:"
+  echo "  ${C_GREEN}velum-status${C_RESET}"
+  echo
+}
+
+# ============================================================================
+# MAIN
+# ============================================================================
+
+main() {
+  echo
+  echo "${C_BOLD}velum-connect${C_RESET}"
+  echo "============="
+  echo
+
+  # Require root
+  require_root
+
+  # Check requirements
+  require_cmd wg-quick wireguard-tools
+  require_cmd curl curl
+  require_cmd jq jq
+
+  # Load configuration
+  load_config
+
+  # Load provider
+  load_provider "${CONFIG[provider]}" || exit 1
+
+  # Check token
+  if ! check_token_expiry; then
+    print_error "Authentication token expired. Run velum-config to re-authenticate."
+    exit 1
+  fi
+
+  # Server selection
+  if [[ "${CONFIG[server_auto]:-true}" == "true" ]] && [[ -z "${CONFIG[selected_ip]:-}" ]]; then
+    find_best_server
+  elif [[ -z "${CONFIG[selected_ip]:-}" ]]; then
+    print_error "No server selected. Run velum-config to select a server."
+    exit 1
+  fi
+
+  echo "Connecting to: ${CONFIG[selected_region]} (${CONFIG[selected_ip]})"
+  echo
+
+  # Pre-connection setup
+  setup_ipv6
+
+  # Generate WireGuard keys
+  generate_wg_keys
+
+  # Exchange keys with provider
+  local wg_response
+  wg_response=$(provider_wg_exchange \
+    "${CONFIG[selected_ip]}" \
+    "${CONFIG[selected_hostname]}" \
+    "$WG_PUBLIC_KEY" \
+    "${CONFIG[dip_token]:-}") || {
+    print_error "WireGuard key exchange failed"
+    exit 1
+  }
+
+  # Extract connection parameters
+  local peer_ip server_key server_port dns_server
+  peer_ip=$(echo "$wg_response" | jq -r '.peer_ip')
+  server_key=$(echo "$wg_response" | jq -r '.server_key')
+  server_port=$(echo "$wg_response" | jq -r '.server_port')
+
+  if [[ "${CONFIG[use_provider_dns]:-false}" == "true" ]]; then
+    dns_server=$(echo "$wg_response" | jq -r '.dns_servers[0]')
+  else
+    dns_server=""
+  fi
+
+  # Create WireGuard config
+  create_wg_config "$peer_ip" "$server_key" "$server_port" "${CONFIG[selected_ip]}" "$dns_server"
+
+  # Clear private key from memory (it's now in config file)
+  unset WG_PRIVATE_KEY
+
+  # Start WireGuard
+  start_wireguard
+
+  # Port forwarding
+  start_port_forwarding
+
+  # Show connection info
+  show_connection_info
+}
+
+main "$@"

@@ -1,18 +1,17 @@
 # Credentials and secrets
-.pia_credentials
 *.credentials
 *.secret
 token
-pia_gen_wg.sh
+*_token
+*_account
 
 # Private keys (NOT public certs like ca.rsa.4096.crt)
 *.key
 *.pem
-!ca.rsa.4096.crt
+!etc/providers/*/*.crt
 
 # WireGuard configs (contain private keys)
 *.conf
-!/openvpn_config/*.ovpn
 
 # Environment files
 .env
@@ -27,13 +26,19 @@ pia_gen_wg.sh
 *.swp
 *.swo
 
-# Claude Code
-.claude/
+# IDE
+.idea/
+.vscode/
+*.sublime-*
 
-# Runtime files (created during operation)
-/opt/piavpn-manual/
+# Runtime files
+/tmp/velum-*
 
 # Backup files
 *.bak
 *.backup
 *.orig
+
+# Build artifacts (future)
+/dist/
+/build/
