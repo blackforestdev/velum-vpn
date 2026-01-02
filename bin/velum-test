@@ -530,9 +530,132 @@ test_port_forwarding() {
   echo ""
 }
 
-# Test 9: Reconnection Info
+# Test 9: VPN Detection Check
+test_vpn_detection() {
+  echo "${BLUE}[9] VPN Detection Check${NC}"
+
+  # Get current public IP (reuse from earlier if available, otherwise fetch)
+  local public_ip
+  public_ip=$(curl -s --tlsv1.2 --max-time 5 https://api.ipify.org 2>/dev/null)
+
+  if [[ -z "$public_ip" ]]; then
+    echo "    Status:     $FAIL - Could not retrieve public IP"
+    ((TESTS_FAILED++))
+    echo ""
+    return
+  fi
+
+  local detection_count=0
+  local services_checked=0
+  local detection_details=""
+
+  # Check 1: ip-api.com (has hosting/proxy detection)
+  local ip_api_result
+  ip_api_result=$(curl -s --tlsv1.2 --max-time 5 "http://ip-api.com/json/$public_ip?fields=status,hosting,proxy,isp,org,as" 2>/dev/null)
+
+  if [[ -n "$ip_api_result" && "$ip_api_result" == *"status"* ]]; then
+    ((services_checked++))
+    local is_hosting is_proxy
+    is_hosting=$(echo "$ip_api_result" | grep -o '"hosting":[^,}]*' | cut -d: -f2)
+    is_proxy=$(echo "$ip_api_result" | grep -o '"proxy":[^,}]*' | cut -d: -f2)
+
+    if [[ "$is_hosting" == "true" ]]; then
+      ((detection_count++))
+      detection_details="$detection_details datacenter"
+    fi
+    if [[ "$is_proxy" == "true" ]]; then
+      ((detection_count++))
+      detection_details="$detection_details proxy"
+    fi
+  fi
+
+  # Check 2: ipinfo.io privacy detection
+  local ipinfo_result
+  ipinfo_result=$(curl -s --tlsv1.2 --max-time 5 "https://ipinfo.io/$public_ip/json" 2>/dev/null)
+
+  if [[ -n "$ipinfo_result" ]]; then
+    ((services_checked++))
+    local org asn
+    org=$(echo "$ipinfo_result" | grep -o '"org": *"[^"]*"' | cut -d'"' -f4)
+    asn=$(echo "$ipinfo_result" | grep -o '"org": *"[^"]*"' | cut -d'"' -f4 | grep -o "^AS[0-9]*")
+
+    # Check against known datacenter/VPN ASNs and names
+    local datacenter_match=false
+    case "$org" in
+      *M247*|*Datacamp*|*Leaseweb*|*Choopa*|*Vultr*|*DigitalOcean*|*Linode*|*OVH*|*Hetzner*)
+        datacenter_match=true ;;
+      *"Private Internet"*|*Mullvad*|*NordVPN*|*ExpressVPN*|*Surfshark*|*ProtonVPN*)
+        datacenter_match=true ;;
+      *Quadranet*|*Cogent*|*Glesys*|*Privex*|*31173*|*Arelion*|*DataPacket*|*Servinga*)
+        datacenter_match=true ;;
+    esac
+
+    if [[ "$datacenter_match" == "true" ]]; then
+      ((detection_count++))
+      detection_details="$detection_details ASN:known-vpn"
+    fi
+  fi
+
+  # Check 3: Scamalytics (free IP quality check)
+  local scam_result
+  scam_result=$(curl -s --tlsv1.2 --max-time 5 "https://scamalytics.com/ip/$public_ip" 2>/dev/null)
+
+  if [[ -n "$scam_result" ]]; then
+    ((services_checked++))
+    if echo "$scam_result" | grep -qi "VPN.*Yes\|Proxy.*Yes\|very high risk\|high risk"; then
+      ((detection_count++))
+      detection_details="$detection_details scamalytics"
+    fi
+  fi
+
+  # Check 4: iphub.info style check via ipapi.is (free)
+  local ipapi_is_result
+  ipapi_is_result=$(curl -s --tlsv1.2 --max-time 5 "https://api.ipapi.is/?q=$public_ip" 2>/dev/null)
+
+  if [[ -n "$ipapi_is_result" && "$ipapi_is_result" == *"is_vpn"* ]]; then
+    ((services_checked++))
+    local is_vpn is_proxy_api is_datacenter
+    is_vpn=$(echo "$ipapi_is_result" | grep -o '"is_vpn":[^,}]*' | cut -d: -f2)
+    is_proxy_api=$(echo "$ipapi_is_result" | grep -o '"is_proxy":[^,}]*' | cut -d: -f2)
+    is_datacenter=$(echo "$ipapi_is_result" | grep -o '"is_datacenter":[^,}]*' | cut -d: -f2)
+
+    if [[ "$is_vpn" == "true" ]]; then
+      ((detection_count++))
+      detection_details="$detection_details vpn-flagged"
+    fi
+    if [[ "$is_proxy_api" == "true" ]]; then
+      ((detection_count++))
+      detection_details="$detection_details proxy-flagged"
+    fi
+    if [[ "$is_datacenter" == "true" ]]; then
+      ((detection_count++))
+      detection_details="$detection_details datacenter-flagged"
+    fi
+  fi
+
+  # Report results
+  echo "    IP checked: ${GREEN}$public_ip${NC}"
+  echo "    Services:   ${GREEN}$services_checked checked${NC}"
+
+  if [[ $detection_count -eq 0 ]]; then
+    echo "    Detection:  $PASS - Not flagged as VPN/proxy"
+    ((TESTS_PASSED++))
+  elif [[ $detection_count -le 2 ]]; then
+    echo "    Detection:  $WARN - Partially detected ($detection_count flags:$detection_details)"
+    echo "    Impact:     Some sites may block or challenge this IP"
+    ((TESTS_WARNED++))
+  else
+    echo "    Detection:  $FAIL - Highly detectable ($detection_count flags:$detection_details)"
+    echo "    Impact:     Many sites will block or flag this IP as VPN/proxy"
+    ((TESTS_FAILED++))
+  fi
+
+  echo ""
+}
+
+# Test 10: Reconnection Info
 test_reconnection() {
-  echo "${BLUE}[9] Reconnection${NC}"
+  echo "${BLUE}[10] Reconnection${NC}"
 
   local wg_config_found=false
   for config_path in /etc/wireguard/pia.conf /usr/local/etc/wireguard/pia.conf; do
@@ -603,6 +726,7 @@ main() {
   test_killswitch
   test_leak_sources
   test_port_forwarding
+  test_vpn_detection
   test_reconnection
 
   # Summary
