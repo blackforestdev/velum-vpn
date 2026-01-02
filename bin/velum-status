@@ -14,6 +14,7 @@ export VELUM_ROOT
 
 # Source libraries
 source "$VELUM_ROOT/lib/velum-core.sh"
+source "$VELUM_ROOT/lib/velum-security.sh"
 source "$VELUM_ROOT/lib/os/detect.sh"
 
 # ============================================================================
