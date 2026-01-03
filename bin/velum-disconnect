@@ -81,6 +81,11 @@ main() {
 
   # Stop in reverse order of start
 
+  # 0. Stop background monitor
+  if [[ -x "$SCRIPT_DIR/velum-monitor" ]]; then
+    "$SCRIPT_DIR/velum-monitor" stop >/dev/null 2>&1 || true
+  fi
+
   # 1. Stop port forwarding
   stop_port_forwarding
 

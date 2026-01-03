@@ -412,6 +412,11 @@ main() {
   # Port forwarding
   start_port_forwarding
 
+  # Start background monitor
+  if [[ -x "$SCRIPT_DIR/velum-monitor" ]]; then
+    "$SCRIPT_DIR/velum-monitor" start >/dev/null 2>&1 || true
+  fi
+
   # Show connection info
   show_connection_info
 }

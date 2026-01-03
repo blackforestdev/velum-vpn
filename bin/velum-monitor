@@ -1,0 +1,428 @@
+#!/usr/bin/env bash
+# velum-monitor - Background VPN health monitoring daemon
+# Monitors VPN connection, kill switch, and sends desktop notifications
+
+set -euo pipefail
+
+# ============================================================================
+# INITIALIZATION
+# ============================================================================
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+VELUM_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+export VELUM_ROOT
+
+# Source libraries
+source "$VELUM_ROOT/lib/velum-core.sh"
+source "$VELUM_ROOT/lib/os/detect.sh"
+
+# Monitor configuration
+MONITOR_INTERVAL="${VELUM_MONITOR_INTERVAL:-10}"  # Check every 10 seconds
+HANDSHAKE_STALE_THRESHOLD=180  # 3 minutes without handshake = stale
+PID_FILE="/tmp/velum-monitor.pid"
+STATE_FILE="/tmp/velum-monitor.state"
+
+# State tracking
+LAST_VPN_STATE="unknown"
+LAST_KS_STATE="unknown"
+LAST_HANDSHAKE_ALERT=0
+
+# ============================================================================
+# NOTIFICATIONS (Cross-platform)
+# ============================================================================
+
+# Send desktop notification with audio fallback
+notify() {
+  local title="$1"
+  local message="$2"
+  local urgency="${3:-normal}"  # low, normal, critical
+
+  # Log the notification
+  log_info "NOTIFY [$urgency]: $title - $message"
+
+  if [[ "$VELUM_OS" == "macos" ]]; then
+    # macOS: try osascript notification (requires Terminal notification permissions)
+    local sound=""
+    [[ "$urgency" == "critical" ]] && sound='with sound name "Basso"'
+    local notify_cmd="osascript -e 'display notification \"$message\" with title \"$title\" $sound'"
+
+    local notify_user="${SUDO_USER:-${VELUM_NOTIFY_USER:-}}"
+    if [[ $EUID -eq 0 && -n "$notify_user" ]]; then
+      sudo -u "$notify_user" bash -c "$notify_cmd" 2>/dev/null || true
+    else
+      eval "$notify_cmd" 2>/dev/null || true
+    fi
+
+    # Audio alert for critical notifications (always works)
+    if [[ "$urgency" == "critical" ]]; then
+      # Use say command for audio alert
+      local say_user="${SUDO_USER:-${VELUM_NOTIFY_USER:-}}"
+      local say_cmd="say -v Samantha 'VPN Alert: $title'"
+      if [[ $EUID -eq 0 && -n "$say_user" ]]; then
+        sudo -u "$say_user" bash -c "$say_cmd" 2>/dev/null &
+      else
+        eval "$say_cmd" 2>/dev/null &
+      fi
+    fi
+  else
+    # Linux: use notify-send
+    local urgency_flag=""
+    case "$urgency" in
+      low) urgency_flag="-u low" ;;
+      critical) urgency_flag="-u critical" ;;
+      *) urgency_flag="-u normal" ;;
+    esac
+    if command -v notify-send >/dev/null 2>&1; then
+      local notify_user="${SUDO_USER:-${VELUM_NOTIFY_USER:-}}"
+      if [[ $EUID -eq 0 && -n "$notify_user" ]]; then
+        sudo -u "$notify_user" DISPLAY=:0 DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$(id -u "$notify_user")/bus" \
+          notify-send $urgency_flag "$title" "$message" 2>/dev/null || true
+      else
+        notify-send $urgency_flag "$title" "$message" 2>/dev/null || true
+      fi
+    fi
+
+    # Audio alert for critical (using paplay or aplay if available)
+    if [[ "$urgency" == "critical" ]]; then
+      if command -v paplay >/dev/null 2>&1; then
+        paplay /usr/share/sounds/freedesktop/stereo/alarm-clock-elapsed.oga 2>/dev/null &
+      elif command -v aplay >/dev/null 2>&1; then
+        aplay /usr/share/sounds/alsa/Front_Center.wav 2>/dev/null &
+      fi
+    fi
+  fi
+}
+
+# ============================================================================
+# HEALTH CHECKS
+# ============================================================================
+
+# Check if VPN interface is up
+check_vpn_interface() {
+  local iface=""
+
+  if [[ "$VELUM_OS" == "macos" ]]; then
+    iface=$(ifconfig 2>/dev/null | grep -E "^utun[0-9]+:" | head -1 | cut -d: -f1)
+  else
+    iface=$(ip link show type wireguard 2>/dev/null | head -1 | awk -F: '{print $2}' | tr -d ' ')
+  fi
+
+  [[ -n "$iface" ]]
+}
+
+# Get handshake age in seconds
+get_handshake_age() {
+  local wg_output
+  wg_output=$(sudo wg show 2>/dev/null || echo "")
+
+  if [[ -z "$wg_output" ]]; then
+    echo "999999"
+    return
+  fi
+
+  local handshake_line
+  handshake_line=$(echo "$wg_output" | grep "latest handshake:" || echo "")
+
+  if [[ -z "$handshake_line" ]]; then
+    echo "999999"
+    return
+  fi
+
+  # Parse handshake time (e.g., "1 minute, 30 seconds ago" or "45 seconds ago")
+  local total_seconds=0
+
+  if [[ "$handshake_line" =~ ([0-9]+)\ hour ]]; then
+    total_seconds=$((total_seconds + BASH_REMATCH[1] * 3600))
+  fi
+  if [[ "$handshake_line" =~ ([0-9]+)\ minute ]]; then
+    total_seconds=$((total_seconds + BASH_REMATCH[1] * 60))
+  fi
+  if [[ "$handshake_line" =~ ([0-9]+)\ second ]]; then
+    total_seconds=$((total_seconds + BASH_REMATCH[1]))
+  fi
+
+  echo "$total_seconds"
+}
+
+# Check if kill switch is active
+check_kill_switch() {
+  if [[ "$VELUM_OS" == "macos" ]]; then
+    # Check pf anchor
+    if sudo pfctl -a velum_killswitch -s rules 2>/dev/null | grep -q "block"; then
+      return 0
+    fi
+  else
+    # Linux: check iptables or nftables
+    if sudo iptables -L VELUM_KILLSWITCH 2>/dev/null | grep -q "DROP"; then
+      return 0
+    fi
+    if sudo nft list table inet velum_killswitch 2>/dev/null | grep -q "drop"; then
+      return 0
+    fi
+  fi
+  return 1
+}
+
+# ============================================================================
+# MONITORING LOOP
+# ============================================================================
+
+monitor_loop() {
+  log_info "VPN monitor started (PID: $$, interval: ${MONITOR_INTERVAL}s)"
+
+  # Save PID (world-readable for status checks)
+  echo $$ > "$PID_FILE"
+  chmod 644 "$PID_FILE" 2>/dev/null || true
+
+  # Initialize state (world-readable)
+  echo "started=$(date +%s)" > "$STATE_FILE"
+  chmod 644 "$STATE_FILE" 2>/dev/null || true
+
+  # Notify user that monitoring has started
+  notify "VPN Monitor Active" "Background monitoring started. You'll be alerted if VPN drops." "low"
+
+  while true; do
+    local vpn_up=false
+    local ks_active=false
+    local handshake_age=999999
+    local now
+    now=$(date +%s)
+
+    # Check VPN interface
+    if check_vpn_interface; then
+      vpn_up=true
+      handshake_age=$(get_handshake_age)
+    fi
+
+    # Check kill switch
+    if check_kill_switch; then
+      ks_active=true
+    fi
+
+    # Update state file (world-readable for status checks)
+    cat > "$STATE_FILE" << EOF
+started=$(grep "started=" "$STATE_FILE" 2>/dev/null | cut -d= -f2 || echo "$now")
+last_check=$now
+vpn_up=$vpn_up
+ks_active=$ks_active
+handshake_age=$handshake_age
+EOF
+    chmod 644 "$STATE_FILE" 2>/dev/null || true
+
+    # Alert on VPN state change
+    if [[ "$vpn_up" == "true" && "$LAST_VPN_STATE" == "false" ]]; then
+      notify "VPN Connected" "VPN connection restored" "normal"
+      log_info "VPN connection restored"
+    elif [[ "$vpn_up" == "false" && "$LAST_VPN_STATE" == "true" ]]; then
+      notify "VPN Disconnected" "VPN connection lost! Kill switch should block traffic." "critical"
+      log_warn "VPN connection lost"
+    fi
+
+    # Alert on kill switch state change
+    if [[ "$vpn_up" == "true" ]]; then
+      if [[ "$ks_active" == "false" && "$LAST_KS_STATE" == "true" ]]; then
+        notify "Kill Switch Disabled" "Kill switch was disabled while VPN is active!" "critical"
+        log_warn "Kill switch disabled unexpectedly"
+      elif [[ "$ks_active" == "true" && "$LAST_KS_STATE" == "false" ]]; then
+        notify "Kill Switch Enabled" "Kill switch protection restored" "normal"
+        log_info "Kill switch restored"
+      fi
+    fi
+
+    # Alert on stale handshake (connection degraded)
+    if [[ "$vpn_up" == "true" && "$handshake_age" -gt "$HANDSHAKE_STALE_THRESHOLD" ]]; then
+      # Only alert once per stale period
+      if [[ $((now - LAST_HANDSHAKE_ALERT)) -gt 300 ]]; then
+        notify "VPN Connection Stale" "No handshake for ${handshake_age}s. Connection may be degraded." "normal"
+        log_warn "Handshake stale: ${handshake_age}s"
+        LAST_HANDSHAKE_ALERT=$now
+      fi
+    fi
+
+    # Update last states
+    LAST_VPN_STATE="$vpn_up"
+    LAST_KS_STATE="$ks_active"
+
+    sleep "$MONITOR_INTERVAL"
+  done
+}
+
+# ============================================================================
+# COMMANDS
+# ============================================================================
+
+cmd_start() {
+  # Require root for monitoring (needs wg show, pfctl access)
+  if [[ $EUID -ne 0 ]]; then
+    echo "Monitor requires root privileges. Run: sudo velum monitor start"
+    return 1
+  fi
+
+  # Check if already running
+  if [[ -f "$PID_FILE" ]]; then
+    local pid
+    pid=$(cat "$PID_FILE")
+    if kill -0 "$pid" 2>/dev/null; then
+      echo "Monitor already running (PID: $pid)"
+      return 0
+    fi
+    rm -f "$PID_FILE"
+  fi
+
+  echo "Starting VPN monitor..."
+
+  # Start daemon in background (already running as root)
+  # Pass the original user for notifications
+  local log_file="/tmp/velum-monitor.log"
+  local orig_user="${SUDO_USER:-$USER}"
+  VELUM_NOTIFY_USER="$orig_user" nohup "$0" daemon >> "$log_file" 2>&1 &
+  disown 2>/dev/null || true
+
+  sleep 1
+
+  if [[ -f "$PID_FILE" ]]; then
+    local pid
+    pid=$(cat "$PID_FILE")
+    echo "Monitor started (PID: $pid)"
+  else
+    echo "Failed to start monitor"
+    return 1
+  fi
+}
+
+cmd_stop() {
+  if [[ ! -f "$PID_FILE" ]]; then
+    echo "Monitor not running"
+    return 0
+  fi
+
+  local pid
+  pid=$(cat "$PID_FILE")
+
+  if kill -0 "$pid" 2>/dev/null; then
+    echo "Stopping monitor (PID: $pid)..."
+    kill "$pid" 2>/dev/null || true
+    rm -f "$PID_FILE" "$STATE_FILE"
+    echo "Monitor stopped"
+    notify "VPN Monitor Stopped" "Background monitoring has been disabled." "low"
+  else
+    echo "Monitor not running (stale PID file)"
+    rm -f "$PID_FILE" "$STATE_FILE"
+  fi
+}
+
+cmd_status() {
+  echo
+  echo "${C_BOLD}velum-monitor${C_RESET} - VPN Health Monitor"
+  echo "========================================"
+  echo
+
+  # Check if running (use ps instead of kill -0 to work without root)
+  if [[ -f "$PID_FILE" ]]; then
+    local pid
+    pid=$(cat "$PID_FILE")
+    if ps -p "$pid" >/dev/null 2>&1; then
+      echo "Status:       ${C_GREEN}Running${C_RESET} (PID: $pid)"
+
+      # Show state info (may need sudo to read state file)
+      if [[ -f "$STATE_FILE" ]] && [[ -r "$STATE_FILE" ]]; then
+        source "$STATE_FILE"
+        local now
+        now=$(date +%s)
+        local uptime=$((now - started))
+        local uptime_min=$((uptime / 60))
+
+        echo "Uptime:       ${uptime_min} minutes"
+        echo "Last check:   $((now - last_check))s ago"
+        echo
+        echo "VPN:          $([ "$vpn_up" == "true" ] && echo "${C_GREEN}Connected${C_RESET}" || echo "${C_RED}Disconnected${C_RESET}")"
+        echo "Kill switch:  $([ "$ks_active" == "true" ] && echo "${C_GREEN}Active${C_RESET}" || echo "${C_RED}Inactive${C_RESET}")"
+        if [[ "$vpn_up" == "true" ]]; then
+          echo "Handshake:    ${handshake_age}s ago"
+        fi
+      fi
+    else
+      echo "Status:       ${C_YELLOW}Stale PID${C_RESET} (process not running)"
+    fi
+  else
+    echo "Status:       ${C_YELLOW}Not running${C_RESET}"
+  fi
+  echo
+  echo "Commands:"
+  echo "  velum monitor start   Start background monitoring"
+  echo "  velum monitor stop    Stop monitoring"
+  echo "  velum monitor status  Show this status"
+  echo
+  echo "Logs: /tmp/velum-monitor.log"
+  if [[ "$VELUM_OS" == "macos" ]]; then
+    echo "Tip:  Enable Terminal in System Settings → Notifications for desktop alerts"
+  fi
+  echo
+}
+
+cmd_daemon() {
+  # This runs the actual monitoring loop
+  # Called internally by cmd_start
+  monitor_loop
+}
+
+usage() {
+  cat << EOF
+velum-monitor - VPN Health Monitoring Daemon
+
+Usage: velum monitor <command>
+
+Commands:
+  start     Start background monitoring
+  stop      Stop monitoring
+  status    Show monitor status
+
+Environment:
+  VELUM_MONITOR_INTERVAL  Check interval in seconds (default: 10)
+
+The monitor checks:
+  - VPN interface status
+  - Kill switch rules
+  - Handshake freshness
+
+Alerts via desktop notifications when:
+  - VPN disconnects
+  - Kill switch disabled unexpectedly
+  - Connection becomes stale (no handshake)
+
+EOF
+}
+
+# ============================================================================
+# MAIN
+# ============================================================================
+
+main() {
+  local cmd="${1:-status}"
+
+  case "$cmd" in
+    start)
+      cmd_start
+      ;;
+    stop)
+      cmd_stop
+      ;;
+    status)
+      cmd_status
+      ;;
+    daemon)
+      # Internal: run monitoring loop
+      cmd_daemon
+      ;;
+    -h|--help|help)
+      usage
+      ;;
+    *)
+      echo "Unknown command: $cmd" >&2
+      usage
+      exit 1
+      ;;
+  esac
+}
+
+main "$@"

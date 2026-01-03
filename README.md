@@ -91,6 +91,7 @@ Commands:
   test        Test VPN connection for leaks
   killswitch  Manage kill switch
   webrtc      Open browser for WebRTC leak test
+  monitor     Background VPN health monitoring
 
 Options:
   -h, --help     Show help
@@ -217,6 +218,35 @@ velum webrtc
 
 **Note:** The `velum test` command includes automated WebRTC risk assessment that checks for non-VPN public IPs and mDNS status without requiring a browser.
 
+### `velum monitor`
+
+Background daemon that monitors VPN health and sends alerts.
+
+```bash
+# Start background monitoring
+sudo velum monitor start
+
+# Check monitor status
+velum monitor status
+
+# Stop monitoring
+sudo velum monitor stop
+```
+
+**Features:**
+- Automatically starts with `velum connect`, stops with `velum disconnect`
+- Monitors VPN interface status, kill switch rules, handshake freshness
+- Alerts on VPN disconnect, kill switch disabled, stale connection
+- Audio alerts (macOS `say` command) for critical events
+- Desktop notifications (requires Terminal notification permissions on macOS)
+- All events logged to `/tmp/velum-monitor.log`
+
+**Alerts sent for:**
+- VPN disconnected (critical - audio alert)
+- VPN reconnected
+- Kill switch unexpectedly disabled (critical - audio alert)
+- Connection stale (no handshake for 3+ minutes)
+
 ## Configuration
 
 ### Configuration File
@@ -309,6 +339,7 @@ velum-vpn/
 │   ├── velum-connect             # VPN connection
 │   ├── velum-disconnect          # VPN disconnection
 │   ├── velum-killswitch          # Kill switch management
+│   ├── velum-monitor             # Background health monitor
 │   ├── velum-status              # Connection status
 │   ├── velum-test                # Connection validator
 │   └── velum-webrtc              # WebRTC leak test (browser)
