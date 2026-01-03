@@ -10,7 +10,10 @@ velum-vpn provides a unified command-line interface for connecting to multiple V
 - **WireGuard Only**: Modern, fast, and secure - no legacy OpenVPN support
 - **Kill Switch**: Firewall-based protection that blocks all traffic if VPN drops
 - **IPv6 Protection**: Blocks IPv6 at both interface and firewall level to prevent leaks
-- **DNS Leak Protection**: Routes DNS through VPN provider's servers
+- **DNS Leak Protection**: Routes DNS through VPN provider's servers with encrypted fallback
+- **DNS Fallback**: Quad9 (9.9.9.9) as secondary DNS, routed through VPN tunnel
+- **WebRTC Leak Detection**: Automated risk assessment and browser-based testing
+- **VPN Detection Check**: Tests if your IP is flagged by detection services
 - **Cross-Platform**: Full support for macOS and Linux
 - **XDG Compliant**: Configuration stored in `~/.config/velum/` following Linux standards
 - **Security Hardened**: TLS 1.2+ enforcement, credential cleanup, input validation
@@ -87,6 +90,7 @@ Commands:
   status      Show connection status
   test        Test VPN connection for leaks
   killswitch  Manage kill switch
+  webrtc      Open browser for WebRTC leak test
 
 Options:
   -h, --help     Show help
@@ -173,11 +177,11 @@ sudo velum test
 **Test categories:**
 1. **WireGuard Interface**: Handshake, transfer stats, allowed IPs
 2. **Public IP Check**: Verifies IP is from VPN provider
-3. **DNS Leak Test**: Tests DNS resolution through VPN
+3. **DNS Leak Test**: Tests primary DNS and Quad9 fallback routing
 4. **Route Table Check**: Verifies traffic routes through VPN
 5. **Traffic Test**: Ping, HTTPS, MTU tests
 6. **Kill Switch**: Verifies firewall rules are active
-7. **Leak Sources**: IPv6, remote access tools, WebRTC warning
+7. **Leak Sources**: IPv6, remote access tools, WebRTC risk assessment
 8. **Port Forwarding**: Status if enabled
 9. **VPN Detection Check**: Tests if IP is flagged by detection services
 10. **Reconnection Info**: Config age, quick reconnect command
@@ -196,6 +200,22 @@ sudo velum killswitch disable
 # Check status
 velum killswitch status
 ```
+
+### `velum webrtc`
+
+Open browser for WebRTC leak testing. Detects default browser cross-platform.
+
+```bash
+# Open browser to WebRTC leak test page
+velum webrtc
+```
+
+**Features:**
+- Cross-platform browser detection (Firefox, Brave, Chrome, Safari, GNOME Web, KDE browsers)
+- Displays current VPN IP for easy verification
+- Provides guidance on what to check and how to disable WebRTC if needed
+
+**Note:** The `velum test` command includes automated WebRTC risk assessment that checks for non-VPN public IPs and mDNS status without requiring a browser.
 
 ## Configuration
 
@@ -263,10 +283,13 @@ This prevents IPv6 leaks that could expose your real IP address.
 ### DNS Leak Protection
 
 When enabled, DNS queries are routed through the VPN provider's DNS servers:
-- PIA: `10.0.0.243`, `10.0.0.242`
-- Mullvad: `10.64.0.1`
+- PIA: `10.0.0.243` (primary)
+- Mullvad: `10.64.0.1` (primary)
+- Quad9: `9.9.9.9` (fallback, all providers)
 
-The WireGuard configuration includes DNS settings, and on macOS a route is added to ensure DNS traffic goes through the tunnel.
+**Encrypted Fallback**: Quad9 is configured as a secondary DNS and routed through the VPN tunnel. If the primary VPN DNS fails, queries fall back to Quad9 while remaining encrypted within the tunnel.
+
+The WireGuard configuration includes DNS settings, and on macOS routes are added to ensure both primary and fallback DNS traffic goes through the tunnel.
 
 ### Credential Security
 
@@ -287,7 +310,8 @@ velum-vpn/
 │   ├── velum-disconnect          # VPN disconnection
 │   ├── velum-killswitch          # Kill switch management
 │   ├── velum-status              # Connection status
-│   └── velum-test                # Connection validator
+│   ├── velum-test                # Connection validator
+│   └── velum-webrtc              # WebRTC leak test (browser)
 │
 ├── lib/                          # Libraries
 │   ├── velum-core.sh             # Core utilities, colors, logging

@@ -1,0 +1,197 @@
+#!/usr/bin/env bash
+# velum-webrtc - WebRTC leak test via browser
+# Cross-platform browser detection and launch
+
+set -euo pipefail
+
+# ============================================================================
+# INITIALIZATION
+# ============================================================================
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+VELUM_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+export VELUM_ROOT
+
+# Source libraries
+source "$VELUM_ROOT/lib/velum-core.sh"
+source "$VELUM_ROOT/lib/os/detect.sh"
+
+# Test URL
+WEBRTC_TEST_URL="https://browserleaks.com/webrtc"
+
+# ============================================================================
+# BROWSER DETECTION
+# ============================================================================
+
+# Detect default browser (cross-platform)
+detect_default_browser() {
+  local browser=""
+
+  if [[ "$VELUM_OS" == "macos" ]]; then
+    # macOS: Check LaunchServices for default HTTP handler
+    local bundle_id
+    bundle_id=$(defaults read ~/Library/Preferences/com.apple.LaunchServices/com.apple.launchservices.secure LSHandlers 2>/dev/null | \
+      grep -A2 "LSHandlerURLScheme.*https" | grep "LSHandlerRoleAll" | awk -F'"' '{print $2}' | head -1)
+
+    if [[ -z "$bundle_id" ]]; then
+      # Fallback: check common browsers
+      if [[ -d "/Applications/Firefox.app" ]]; then
+        browser="firefox"
+      elif [[ -d "/Applications/Brave Browser.app" ]]; then
+        browser="brave"
+      elif [[ -d "/Applications/Google Chrome.app" ]]; then
+        browser="chrome"
+      elif [[ -d "/Applications/Safari.app" ]]; then
+        browser="safari"
+      fi
+    else
+      case "$bundle_id" in
+        *firefox*) browser="firefox" ;;
+        *brave*) browser="brave" ;;
+        *chrome*) browser="chrome" ;;
+        *safari*) browser="safari" ;;
+        *) browser="$bundle_id" ;;
+      esac
+    fi
+  else
+    # Linux: Use xdg-settings or check $BROWSER
+    if command -v xdg-settings >/dev/null 2>&1; then
+      local xdg_browser
+      xdg_browser=$(xdg-settings get default-web-browser 2>/dev/null || echo "")
+      case "$xdg_browser" in
+        *firefox*) browser="firefox" ;;
+        *brave*) browser="brave" ;;
+        *chrom*) browser="chrome" ;;
+        *epiphany*|*gnome-web*) browser="gnome-web" ;;
+        *konqueror*|*falkon*) browser="kde" ;;
+        *) browser="${xdg_browser%.desktop}" ;;
+      esac
+    elif [[ -n "${BROWSER:-}" ]]; then
+      browser="$BROWSER"
+    fi
+
+    # Fallback: check common locations
+    if [[ -z "$browser" ]]; then
+      for b in firefox brave-browser chromium google-chrome epiphany; do
+        if command -v "$b" >/dev/null 2>&1; then
+          browser="$b"
+          break
+        fi
+      done
+    fi
+  fi
+
+  echo "$browser"
+}
+
+# Get browser display name
+get_browser_name() {
+  local browser="$1"
+  case "$browser" in
+    firefox*) echo "Firefox" ;;
+    brave*) echo "Brave" ;;
+    chrome*|chrom*) echo "Chrome/Chromium" ;;
+    safari*) echo "Safari" ;;
+    gnome-web|epiphany*) echo "GNOME Web" ;;
+    kde|falkon|konqueror) echo "KDE Browser" ;;
+    *) echo "$browser" ;;
+  esac
+}
+
+# Open URL in browser (cross-platform)
+open_browser() {
+  local url="$1"
+
+  if [[ "$VELUM_OS" == "macos" ]]; then
+    open "$url"
+  else
+    # Linux: try xdg-open, then browser-specific
+    if command -v xdg-open >/dev/null 2>&1; then
+      xdg-open "$url" 2>/dev/null &
+    elif [[ -n "${BROWSER:-}" ]]; then
+      $BROWSER "$url" 2>/dev/null &
+    else
+      local browser
+      browser=$(detect_default_browser)
+      if [[ -n "$browser" ]] && command -v "$browser" >/dev/null 2>&1; then
+        "$browser" "$url" 2>/dev/null &
+      else
+        print_error "Could not detect browser. Please open manually: $url"
+        return 1
+      fi
+    fi
+  fi
+}
+
+# ============================================================================
+# WEBRTC INFO
+# ============================================================================
+
+show_webrtc_info() {
+  cat << 'EOF'
+
+WebRTC Leak Test
+================
+
+WebRTC (Web Real-Time Communication) can expose your IP address even when
+using a VPN. This happens because WebRTC uses STUN servers to discover
+your public IP for peer-to-peer connections.
+
+What to check on the test page:
+  1. Public IP Address - Should show your VPN IP, not your real IP
+  2. Local IP Address  - May show private IPs (10.x, 192.168.x) - less critical
+  3. IPv6 Address      - Should be empty or show VPN IPv6 (if any)
+
+If your real IP is exposed:
+  - Firefox: about:config -> media.peerconnection.enabled = false
+  - Chrome/Brave: Install "WebRTC Leak Prevent" extension
+  - Safari: WebRTC is disabled by default in private mode
+
+EOF
+}
+
+# ============================================================================
+# MAIN
+# ============================================================================
+
+main() {
+  local browser
+  browser=$(detect_default_browser)
+  local browser_name
+  browser_name=$(get_browser_name "$browser")
+
+  echo
+  echo "${C_BOLD}velum-webrtc${C_RESET} - WebRTC Leak Test"
+  echo "======================================"
+  echo
+
+  if [[ -n "$browser" ]]; then
+    echo "Detected browser: ${C_GREEN}$browser_name${C_RESET}"
+  else
+    echo "Detected browser: ${C_YELLOW}Unknown${C_RESET}"
+  fi
+
+  # Get current VPN IP for reference
+  local vpn_ip
+  vpn_ip=$(curl -s --max-time 3 https://api.ipify.org 2>/dev/null || echo "unknown")
+  echo "Current public IP: ${C_GREEN}$vpn_ip${C_RESET}"
+  echo
+
+  show_webrtc_info
+
+  echo "Opening: ${C_CYAN}$WEBRTC_TEST_URL${C_RESET}"
+  echo
+
+  if open_browser "$WEBRTC_TEST_URL"; then
+    echo "${C_GREEN}Browser opened.${C_RESET} Verify that:"
+    echo "  - Public IP shows: $vpn_ip (your VPN IP)"
+    echo "  - No real IP addresses are exposed"
+    echo
+  else
+    echo "Please open this URL manually in your browser:"
+    echo "  $WEBRTC_TEST_URL"
+    echo
+  fi
+}
+
+main "$@"

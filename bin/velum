@@ -32,6 +32,7 @@ Commands:
   status      Show connection status
   test        Test VPN connection for leaks
   killswitch  Manage kill switch
+  webrtc      Open browser for WebRTC leak test
 
 Options:
   -h, --help     Show this help
@@ -81,6 +82,9 @@ main() {
       ;;
     killswitch|ks)
       exec "$SCRIPT_DIR/velum-killswitch" "$@"
+      ;;
+    webrtc)
+      exec "$SCRIPT_DIR/velum-webrtc" "$@"
       ;;
     -v|--version|version)
       echo "velum-vpn version $VELUM_VERSION"

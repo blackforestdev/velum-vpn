@@ -156,10 +156,12 @@ create_wg_config() {
 Address = $peer_ip
 PrivateKey = $WG_PRIVATE_KEY"
 
-  # Add DNS if using PIA DNS
+  # Add DNS with encrypted fallback
+  # Primary: VPN provider DNS (e.g., PIA 10.0.0.243)
+  # Secondary: Quad9 (9.9.9.9) - routed through tunnel for encryption
   if [[ -n "$dns_server" ]]; then
     config="$config
-DNS = $dns_server"
+DNS = $dns_server, 9.9.9.9"
   fi
 
   # Add PostUp for kill switch
@@ -181,10 +183,11 @@ PostDown = $VELUM_ROOT/bin/velum-killswitch disable
 PostDown = $VELUM_ROOT/bin/velum-killswitch notify"
   fi
 
-  # Add DNS route fix for macOS
+  # Add DNS route fix for macOS - ensure DNS goes through tunnel
   if [[ "$(uname)" == "Darwin" && -n "$dns_server" ]]; then
     config="$config
-PostUp = route -q -n add -host $dns_server -interface %i 2>/dev/null || true"
+PostUp = route -q -n add -host $dns_server -interface %i 2>/dev/null || true
+PostUp = route -q -n add -host 9.9.9.9 -interface %i 2>/dev/null || true"
   fi
 
   # Peer section

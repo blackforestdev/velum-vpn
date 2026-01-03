@@ -25,9 +25,10 @@ if [[ -t 1 ]]; then
   GREEN=$(tput setaf 2)
   YELLOW=$(tput setaf 3)
   BLUE=$(tput setaf 4)
+  CYAN=$(tput setaf 6)
   NC=$(tput sgr0)
 else
-  RED='' GREEN='' YELLOW='' BLUE='' NC=''
+  RED='' GREEN='' YELLOW='' BLUE='' CYAN='' NC=''
 fi
 
 PASS="${GREEN}PASS${NC}"
@@ -196,10 +197,13 @@ test_public_ip() {
 test_dns_leak() {
   echo "${BLUE}[3] DNS Leak Test${NC}"
 
-  # Get DNS from WireGuard config
+  # Get DNS from WireGuard config (may have multiple: "10.0.0.243, 9.9.9.9")
+  local vpn_dns_full=""
   local vpn_dns=""
   if [[ -f /etc/wireguard/velum.conf ]]; then
-    vpn_dns=$(grep "^DNS" /etc/wireguard/velum.conf 2>/dev/null | cut -d= -f2 | tr -d ' ')
+    vpn_dns_full=$(sudo grep "^DNS" /etc/wireguard/velum.conf 2>/dev/null | cut -d= -f2 | tr -d ' ')
+    # Extract primary DNS (first one) for testing
+    vpn_dns=$(echo "$vpn_dns_full" | cut -d',' -f1)
   fi
 
   # Get configured DNS (OS-specific)
@@ -235,7 +239,7 @@ test_dns_leak() {
     echo "    VPN DNS:    $WARN - Could not detect VPN DNS server"
     ((TESTS_WARNED++))
   else
-    echo "    VPN DNS:    ${GREEN}$vpn_dns${NC}"
+    echo "    VPN DNS:    ${GREEN}$vpn_dns${NC} (primary)"
 
     # Test DNS resolution through VPN DNS
     if nslookup -timeout=3 google.com "$vpn_dns" >/dev/null 2>&1; then
@@ -268,6 +272,41 @@ test_dns_leak() {
       fi
     fi
   fi
+
+  # Check for encrypted fallback DNS (Quad9)
+  local fallback_dns="9.9.9.9"
+  local has_fallback=false
+
+  # Check if Quad9 is configured as secondary DNS
+  if [[ -f /etc/wireguard/velum.conf ]]; then
+    if grep -q "$fallback_dns" /etc/wireguard/velum.conf 2>/dev/null; then
+      has_fallback=true
+    fi
+  fi
+
+  if [[ "$has_fallback" == "true" ]]; then
+    # Check if Quad9 is routed through VPN
+    local quad9_route=""
+    if [[ "$VELUM_OS" == "macos" ]]; then
+      quad9_route=$(route -n get "$fallback_dns" 2>/dev/null | grep "interface:" | awk '{print $2}')
+    else
+      quad9_route=$(ip route get "$fallback_dns" 2>/dev/null | grep -o "dev [^ ]*" | awk '{print $2}')
+    fi
+
+    if [[ "$quad9_route" == utun* ]] || [[ "$quad9_route" == wg* ]]; then
+      echo "    Fallback:   $PASS - Quad9 ($fallback_dns) via tunnel ($quad9_route)"
+      ((TESTS_PASSED++))
+    elif [[ -n "$quad9_route" ]]; then
+      echo "    Fallback:   $WARN - Quad9 configured but route unclear ($quad9_route)"
+      ((TESTS_WARNED++))
+    else
+      echo "    Fallback:   $WARN - Quad9 configured but route not verified"
+      ((TESTS_WARNED++))
+    fi
+  else
+    echo "    Fallback:   ${YELLOW}Not configured${NC}"
+  fi
+
   echo ""
 }
 
@@ -496,8 +535,107 @@ test_leak_sources() {
     ((TESTS_PASSED++))
   fi
 
-  echo "    WebRTC:     ${YELLOW}Manual check required${NC} - browserleaks.com/webrtc"
+  # WebRTC leak risk assessment
+  test_webrtc_risk
   echo ""
+}
+
+# WebRTC leak risk assessment
+test_webrtc_risk() {
+  local vpn_iface=""
+  local vpn_ip=""
+  local risk_found=false
+  local risk_details=""
+
+  # Get VPN interface and IP
+  if [[ "$VELUM_OS" == "macos" ]]; then
+    vpn_iface=$(ifconfig 2>/dev/null | grep -B1 "inet.*-->" | head -1 | cut -d: -f1)
+    vpn_ip=$(curl -s --max-time 3 https://api.ipify.org 2>/dev/null)
+  else
+    vpn_iface=$(ip link show type wireguard 2>/dev/null | head -1 | awk -F: '{print $2}' | tr -d ' ')
+    vpn_ip=$(curl -s --max-time 3 https://api.ipify.org 2>/dev/null)
+  fi
+
+  # Check 1: Look for non-VPN interfaces with public IPs
+  local public_ips=""
+  if [[ "$VELUM_OS" == "macos" ]]; then
+    # Get all interface IPs, excluding loopback and VPN
+    while IFS= read -r line; do
+      local iface ip
+      iface=$(echo "$line" | awk '{print $1}')
+      ip=$(echo "$line" | awk '{print $2}')
+      # Skip loopback, link-local, and private ranges going through VPN
+      if [[ "$ip" != 127.* && "$ip" != 169.254.* && "$iface" != "$vpn_iface" ]]; then
+        # Check if it's a public IP (not RFC1918)
+        if [[ "$ip" != 10.* && "$ip" != 192.168.* && ! "$ip" =~ ^172\.(1[6-9]|2[0-9]|3[01])\. ]]; then
+          public_ips="$public_ips $ip($iface)"
+        fi
+      fi
+    done < <(ifconfig 2>/dev/null | grep "inet " | awk '{print $1, $2}' | grep -v "127.0.0.1")
+  else
+    # Linux
+    while IFS= read -r line; do
+      local ip iface
+      ip=$(echo "$line" | awk '{print $2}' | cut -d/ -f1)
+      iface=$(echo "$line" | awk '{print $NF}')
+      if [[ "$ip" != 127.* && "$ip" != 169.254.* && "$iface" != "$vpn_iface" ]]; then
+        if [[ "$ip" != 10.* && "$ip" != 192.168.* && ! "$ip" =~ ^172\.(1[6-9]|2[0-9]|3[01])\. ]]; then
+          public_ips="$public_ips $ip($iface)"
+        fi
+      fi
+    done < <(ip -4 addr show 2>/dev/null | grep "inet " | grep -v "127.0.0.1")
+  fi
+
+  if [[ -n "$public_ips" ]]; then
+    risk_found=true
+    risk_details="non-VPN public IP:$public_ips"
+  fi
+
+  # Check 2: mDNS/Bonjour status (can leak .local hostnames)
+  local mdns_running=false
+  if [[ "$VELUM_OS" == "macos" ]]; then
+    if launchctl list 2>/dev/null | grep -q "com.apple.mDNSResponder"; then
+      mdns_running=true
+    fi
+  else
+    if systemctl is-active avahi-daemon >/dev/null 2>&1; then
+      mdns_running=true
+    fi
+  fi
+
+  # Check 3: Local IPs that could leak (informational)
+  local local_ips=""
+  if [[ "$VELUM_OS" == "macos" ]]; then
+    local_ips=$(ifconfig 2>/dev/null | grep "inet " | grep -v "127.0.0.1" | awk '{print $2}' | grep -E "^(10\.|192\.168\.|172\.(1[6-9]|2[0-9]|3[01])\.)" | tr '\n' ' ')
+  else
+    local_ips=$(ip -4 addr show 2>/dev/null | grep "inet " | grep -v "127.0.0.1" | awk '{print $2}' | cut -d/ -f1 | grep -E "^(10\.|192\.168\.|172\.(1[6-9]|2[0-9]|3[01])\.)" | tr '\n' ' ')
+  fi
+
+  # Report results
+  if [[ "$risk_found" == "true" ]]; then
+    echo "    WebRTC:     $FAIL - Risk detected: $risk_details"
+    ((TESTS_FAILED++))
+  else
+    # Check if VPN IP matches what WebRTC would expose
+    if [[ -n "$vpn_ip" ]]; then
+      echo "    WebRTC:     $PASS - Public IP via STUN would be $vpn_ip (VPN)"
+      ((TESTS_PASSED++))
+    else
+      echo "    WebRTC:     $WARN - Could not verify public IP"
+      ((TESTS_WARNED++))
+    fi
+  fi
+
+  # Additional info (informational, not warnings)
+  if [[ -n "$local_ips" ]]; then
+    echo "    Local IPs:  ${local_ips}(private, low risk)"
+  fi
+
+  if [[ "$mdns_running" == "true" ]]; then
+    echo "    mDNS:       Active (Firefox obfuscates with .local UUIDs)"
+  fi
+
+  echo "    Full test:  ${CYAN}velum webrtc${NC} or browserleaks.com/webrtc"
 }
 
 # Test 8: Port Forwarding
