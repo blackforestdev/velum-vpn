@@ -10,3 +10,9 @@
 - After each refactor or hardening change, test the affected scripts before committing
 - Commit and push only after user confirms the changes work correctly
 - If multiple related changes are made, test incrementally where possible
+
+## Documentation
+- Before committing documentable changes (new features, providers, commands, config options), update README.md
+- Ensure README.md accurately reflects the current state of velum-vpn
+- Keep the Supported Providers table, Commands section, and Architecture diagram current
+- Update Configuration examples when config options change

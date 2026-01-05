@@ -6,7 +6,7 @@ velum-vpn provides a unified command-line interface for connecting to multiple V
 
 ## Features
 
-- **Provider Agnostic**: Support for multiple VPN providers (PIA, Mullvad) with a pluggable architecture
+- **Provider Agnostic**: Support for multiple VPN providers (PIA, Mullvad, IVPN) with a pluggable architecture
 - **WireGuard Only**: Modern, fast, and secure - no legacy OpenVPN support
 - **Kill Switch**: Firewall-based protection that blocks all traffic if VPN drops
 - **IPv6 Protection**: Blocks IPv6 at both interface and firewall level to prevent leaks
@@ -24,6 +24,7 @@ velum-vpn provides a unified command-line interface for connecting to multiple V
 |----------|---------------|-----------------|--------------|
 | **PIA** (Private Internet Access) | Username + Password | Yes | Yes |
 | **Mullvad** | 16-digit Account Number | No (removed 2023) | No |
+| **IVPN** | Account ID (i-XXXX-XXXX-XXXX) | No (removed) | No |
 
 ## Requirements
 
@@ -102,7 +103,7 @@ Options:
 
 Interactive configuration wizard with 5 phases:
 
-1. **Provider Selection**: Choose VPN provider (PIA, Mullvad)
+1. **Provider Selection**: Choose VPN provider (PIA, Mullvad, IVPN)
 2. **Authentication**: Enter credentials and authenticate
 3. **Security Profile**: Configure kill switch, IPv6, DNS settings
 4. **Connection Features**: Port forwarding, Dedicated IP (provider-dependent)
@@ -315,6 +316,7 @@ This prevents IPv6 leaks that could expose your real IP address.
 When enabled, DNS queries are routed through the VPN provider's DNS servers:
 - PIA: `10.0.0.243` (primary)
 - Mullvad: `10.64.0.1` (primary)
+- IVPN: `10.0.254.1` (primary)
 - Quad9: `9.9.9.9` (fallback, all providers)
 
 **Encrypted Fallback**: Quad9 is configured as a secondary DNS and routed through the VPN tunnel. If the primary VPN DNS fails, queries fall back to Quad9 while remaining encrypted within the tunnel.
@@ -354,7 +356,8 @@ velum-vpn/
 │   └── providers/                # VPN provider plugins
 │       ├── provider-base.sh      # Provider interface
 │       ├── pia.sh                # PIA implementation
-│       └── mullvad.sh            # Mullvad implementation
+│       ├── mullvad.sh            # Mullvad implementation
+│       └── ivpn.sh               # IVPN implementation
 │
 ├── etc/                          # Static configuration
 │   └── providers/
@@ -434,7 +437,7 @@ os_killswitch_rule_count()   # Count firewall rules
 2. Implement the provider interface functions
 3. The provider will be auto-discovered by `list_providers`
 
-See `lib/providers/pia.sh` or `lib/providers/mullvad.sh` for examples.
+See `lib/providers/pia.sh`, `lib/providers/mullvad.sh`, or `lib/providers/ivpn.sh` for examples.
 
 ## Troubleshooting
 
