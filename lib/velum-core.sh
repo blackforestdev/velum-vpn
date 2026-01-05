@@ -297,7 +297,10 @@ ask_yn() {
     yn_hint="[y/N]"
   fi
 
-  read -r -p "${prompt} ${yn_hint}: " response
+  if ! read -r -p "${prompt} ${yn_hint}: " response; then
+    echo -e "\n\nCancelled." >&2
+    exit 130
+  fi
   response="${response:-$default}"
 
   [[ "${response,,}" == "y" || "${response,,}" == "yes" ]]
@@ -311,10 +314,16 @@ ask_input() {
   local response
 
   if [[ -n "$default" ]]; then
-    read -r -p "${prompt} [${default}]: " response
+    if ! read -r -p "${prompt} [${default}]: " response; then
+      echo -e "\n\nCancelled." >&2
+      exit 130
+    fi
     response="${response:-$default}"
   else
-    read -r -p "${prompt}: " response
+    if ! read -r -p "${prompt}: " response; then
+      echo -e "\n\nCancelled." >&2
+      exit 130
+    fi
   fi
 
   echo "$response"
@@ -326,7 +335,10 @@ ask_password() {
   local prompt="$1"
   local password
 
-  read -r -s -p "${prompt}: " password
+  if ! read -r -s -p "${prompt}: " password; then
+    echo -e "\n\nCancelled." >&2
+    exit 130
+  fi
   echo >&2  # Newline after hidden input
   echo "$password"
 }
@@ -346,7 +358,10 @@ ask_choice() {
 
   local choice
   while true; do
-    read -r -p "Enter number [1-${#options[@]}]: " choice
+    if ! read -r -p "Enter number [1-${#options[@]}]: " choice; then
+      echo -e "\n\nCancelled." >&2
+      exit 130
+    fi
     if [[ "$choice" =~ ^[0-9]+$ ]] && [[ "$choice" -ge 1 ]] && [[ "$choice" -le "${#options[@]}" ]]; then
       echo "${options[$((choice - 1))]}"
       return 0
@@ -431,8 +446,12 @@ _run_cleanup() {
   fi
 }
 
-# Set up traps
-trap _run_cleanup EXIT INT TERM
+# Handle cleanup on exit
+trap _run_cleanup EXIT
+
+# Handle Ctrl+C and termination - cleanup then exit
+trap 'echo -e "\n\nCancelled."; _run_cleanup; exit 130' INT
+trap '_run_cleanup; exit 143' TERM
 
 # ============================================================================
 # VERSION INFO

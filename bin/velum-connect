@@ -81,12 +81,23 @@ find_best_server() {
 
   # Test up to 10 servers
   local count=0
-  while IFS= read -r region; do
+  while IFS= read -r server; do
     local id name ip hostname latency
-    id=$(echo "$region" | jq -r '.id')
-    name=$(echo "$region" | jq -r '.name')
-    ip=$(echo "$region" | jq -r '.servers.wg[0].ip // empty')
-    hostname=$(echo "$region" | jq -r '.servers.wg[0].cn // empty')
+
+    # Handle different provider server list formats
+    if [[ "${CONFIG[provider]}" == "mullvad" ]]; then
+      # Mullvad format: hostname, country_name, city_name, ipv4_addr_in
+      id=$(echo "$server" | jq -r '.hostname')
+      name=$(echo "$server" | jq -r '"\(.country_name) - \(.city_name)"')
+      ip=$(echo "$server" | jq -r '.ipv4_addr_in // empty')
+      hostname="$id"
+    else
+      # PIA format: id, name, servers.wg[0].ip, servers.wg[0].cn
+      id=$(echo "$server" | jq -r '.id')
+      name=$(echo "$server" | jq -r '.name')
+      ip=$(echo "$server" | jq -r '.servers.wg[0].ip // empty')
+      hostname=$(echo "$server" | jq -r '.servers.wg[0].cn // empty')
+    fi
 
     [[ -z "$ip" ]] && continue
 
@@ -318,7 +329,9 @@ show_connection_info() {
   fi
 
   if [[ "${CONFIG[use_provider_dns]:-false}" == "true" ]]; then
-    echo "  DNS:          PIA (10.0.0.243)"
+    local dns_server
+    dns_server=$(provider_get_dns | head -1)
+    echo "  DNS:          $(provider_name) ($dns_server)"
   fi
 
   echo
@@ -354,8 +367,14 @@ main() {
   # Load provider
   load_provider "${CONFIG[provider]}" || exit 1
 
-  # Check token
-  if ! check_token_expiry; then
+  # Determine provider-specific token file
+  local token_file="$VELUM_TOKEN_FILE"
+  if [[ "${CONFIG[provider]}" == "mullvad" ]]; then
+    token_file="${VELUM_TOKENS_DIR}/mullvad_token"
+  fi
+
+  # Check token (provider-specific)
+  if ! check_token_expiry "$token_file"; then
     print_error "Authentication token expired. Run velum-config to re-authenticate."
     exit 1
   fi

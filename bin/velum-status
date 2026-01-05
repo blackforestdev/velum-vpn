@@ -17,6 +17,27 @@ source "$VELUM_ROOT/lib/velum-core.sh"
 source "$VELUM_ROOT/lib/velum-security.sh"
 source "$VELUM_ROOT/lib/os/detect.sh"
 
+# Configuration
+declare -A CONFIG
+CONFIG_FILE="$VELUM_CONFIG_FILE"
+
+# Load configuration to get provider
+load_status_config() {
+  if [[ -f "$CONFIG_FILE" ]]; then
+    # shellcheck source=/dev/null
+    source "$CONFIG_FILE" 2>/dev/null || true
+  fi
+}
+
+# Get provider-specific token file
+get_token_file() {
+  if [[ "${CONFIG[provider]:-}" == "mullvad" ]]; then
+    echo "${VELUM_TOKENS_DIR}/mullvad_token"
+  else
+    echo "$VELUM_TOKEN_FILE"
+  fi
+}
+
 # ============================================================================
 # STATUS CHECKS
 # ============================================================================
@@ -78,6 +99,12 @@ show_status() {
   check_wireguard
 
   echo "Connection:"
+  # Show provider if configured
+  if [[ -n "${CONFIG[provider]:-}" ]]; then
+    local provider_display="${CONFIG[provider]^^}"
+    echo "  Provider:     ${C_BOLD}$provider_display${C_RESET}"
+  fi
+
   if [[ "$WG_STATUS" == "connected" ]]; then
     echo "  Status:       ${C_GREEN}CONNECTED${C_RESET}"
     echo "  Interface:    $WG_IFACE"
@@ -150,6 +177,8 @@ show_status() {
   dns_servers=$(os_get_dns 2>/dev/null | head -1)
   if [[ "$dns_servers" == "10.0.0.243" || "$dns_servers" == "10.0.0.242" ]]; then
     echo "  DNS:          ${C_GREEN}PIA${C_RESET} ($dns_servers)"
+  elif [[ "$dns_servers" == "10.64.0.1" ]]; then
+    echo "  DNS:          ${C_GREEN}Mullvad${C_RESET} ($dns_servers)"
   elif [[ -n "$dns_servers" ]]; then
     echo "  DNS:          $dns_servers"
   else
@@ -173,8 +202,9 @@ show_status() {
 
   # Token status
   echo "Authentication:"
-  local token_status
-  if check_token_expiry 2>/dev/null; then
+  local token_file
+  token_file=$(get_token_file)
+  if check_token_expiry "$token_file" 2>/dev/null; then
     echo "  Token:        ${C_GREEN}Valid${C_RESET}"
   else
     echo "  Token:        ${C_RED}Expired or missing${C_RESET}"
@@ -188,6 +218,7 @@ show_status() {
 # ============================================================================
 
 main() {
+  load_status_config
   show_status
 }
 

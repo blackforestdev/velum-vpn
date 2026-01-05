@@ -46,7 +46,7 @@ provider_auth_type() {
 # Usage: provider_validate_creds "1234567890123456"
 provider_validate_creds() {
   local account_number="$1"
-  local _unused="$2"  # No password for Mullvad
+  local _unused="${2:-}"  # No password for Mullvad
 
   # Account number must be exactly 16 digits
   if ! [[ "$account_number" =~ ^[0-9]{16}$ ]]; then
@@ -62,7 +62,7 @@ provider_validate_creds() {
 # Returns: JSON with access_token and expiry
 provider_authenticate() {
   local account_number="$1"
-  local _unused="$2"  # No password
+  local _unused="${2:-}"  # No password
 
   # Mark for cleanup
   mark_sensitive account_number
@@ -272,10 +272,12 @@ provider_wg_exchange() {
     --data-urlencode "pubkey=$public_key" \
     "$MULLVAD_LEGACY_WG_API")
 
-  # Legacy API returns just the IP address on success, or error JSON
-  if [[ "$response" =~ ^10\.[0-9]+\.[0-9]+\.[0-9]+/[0-9]+$ ]]; then
-    # Success - response is the peer IP
-    local peer_ip="$response"
+  # Legacy API returns IP addresses on success (IPv4,IPv6 or just IPv4), or error JSON
+  # Example success: "10.73.101.32/32,fc00:bbbb:bbbb:bb01::a:651f/128" or "10.73.101.32/32"
+  if [[ "$response" =~ ^10\.[0-9]+\.[0-9]+\.[0-9]+/[0-9]+ ]]; then
+    # Success - extract IPv4 peer IP (first part before comma if present)
+    local peer_ip
+    peer_ip=$(echo "$response" | cut -d',' -f1)
 
     # Get server public key from server list
     local servers

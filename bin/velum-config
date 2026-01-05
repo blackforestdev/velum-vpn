@@ -163,7 +163,10 @@ phase_provider() {
 
   # Select provider
   local choice
-  read -r -p "Select provider [1-${#providers[@]}]: " choice
+  if ! read -r -p "Select provider [1-${#providers[@]}]: " choice; then
+    echo -e "\n\nCancelled."
+    exit 130
+  fi
 
   if [[ "$choice" =~ ^[0-9]+$ ]] && [[ "$choice" -ge 1 ]] && [[ "$choice" -le "${#providers[@]}" ]]; then
     CONFIG[provider]="${providers[$((choice-1))]}"
@@ -191,10 +194,16 @@ phase_authentication() {
   local auth_type
   auth_type=$(provider_auth_type)
 
-  # Check for existing token
-  if check_token_expiry; then
+  # Determine provider-specific token file
+  local token_file="$VELUM_TOKEN_FILE"
+  if [[ "${CONFIG[provider]}" == "mullvad" ]]; then
+    token_file="${VELUM_TOKENS_DIR}/mullvad_token"
+  fi
+
+  # Check for existing token (provider-specific)
+  if check_token_expiry "$token_file"; then
     local token
-    token=$(read_token)
+    token=$(read_token "$token_file")
     if [[ -n "$token" ]]; then
       print_ok "Valid authentication token found."
       CONFIG[token]="$token"
@@ -277,11 +286,13 @@ _auth_account_number() {
   fi
 
   # Prompt for account number if not loaded
+  # NOTE: Mullvad account number is treated as sensitive (it's both username AND password)
+  # Anyone with the 16-digit number has full account access - mask input like a password
   if [[ -z "${CONFIG[username]}" ]]; then
     echo "Enter your Mullvad account number (16 digits)."
     echo "You can find this at https://mullvad.net/account"
     echo
-    CONFIG[username]=$(ask_input "Account number")
+    CONFIG[username]=$(ask_password "Account number")
   fi
 
   # Authenticate
@@ -609,7 +620,10 @@ phase_server() {
 
     echo
     local choice
-    read -r -p "Select server number [1-$((i-1))]: " choice
+    if ! read -r -p "Select server number [1-$((i-1))]: " choice; then
+      echo -e "\n\nCancelled."
+      exit 130
+    fi
 
     if [[ "$choice" =~ ^[0-9]+$ ]] && [[ "$choice" -ge 1 ]] && [[ "$choice" -lt "$i" ]]; then
       local idx=$((choice - 1))
@@ -677,7 +691,10 @@ phase_summary() {
 
   echo
   echo "Press Enter to save configuration, or Ctrl+C to abort..."
-  read -r
+  if ! read -r; then
+    echo -e "\n\nCancelled."
+    exit 130
+  fi
 
   save_config
   print_ok "Configuration saved to $CONFIG_FILE"
