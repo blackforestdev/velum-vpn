@@ -85,19 +85,29 @@ find_best_server() {
     local id name ip hostname latency
 
     # Handle different provider server list formats
-    if [[ "${CONFIG[provider]}" == "mullvad" ]]; then
-      # Mullvad format: hostname, country_name, city_name, ipv4_addr_in
-      id=$(echo "$server" | jq -r '.hostname')
-      name=$(echo "$server" | jq -r '"\(.country_name) - \(.city_name)"')
-      ip=$(echo "$server" | jq -r '.ipv4_addr_in // empty')
-      hostname="$id"
-    else
-      # PIA format: id, name, servers.wg[0].ip, servers.wg[0].cn
-      id=$(echo "$server" | jq -r '.id')
-      name=$(echo "$server" | jq -r '.name')
-      ip=$(echo "$server" | jq -r '.servers.wg[0].ip // empty')
-      hostname=$(echo "$server" | jq -r '.servers.wg[0].cn // empty')
-    fi
+    case "${CONFIG[provider]}" in
+      mullvad)
+        # Mullvad format: hostname, country_name, city_name, ipv4_addr_in
+        id=$(echo "$server" | jq -r '.hostname')
+        name=$(echo "$server" | jq -r '"\(.country_name) - \(.city_name)"')
+        ip=$(echo "$server" | jq -r '.ipv4_addr_in // empty')
+        hostname="$id"
+        ;;
+      ivpn)
+        # IVPN format: gateway, country, city, hosts[0].hostname, hosts[0].host
+        id=$(echo "$server" | jq -r '.hosts[0].hostname')
+        name=$(echo "$server" | jq -r '"\(.country) - \(.city)"')
+        ip=$(echo "$server" | jq -r '.hosts[0].host // empty')
+        hostname="$id"
+        ;;
+      *)
+        # PIA format: id, name, servers.wg[0].ip, servers.wg[0].cn
+        id=$(echo "$server" | jq -r '.id')
+        name=$(echo "$server" | jq -r '.name')
+        ip=$(echo "$server" | jq -r '.servers.wg[0].ip // empty')
+        hostname=$(echo "$server" | jq -r '.servers.wg[0].cn // empty')
+        ;;
+    esac
 
     [[ -z "$ip" ]] && continue
 
@@ -369,9 +379,10 @@ main() {
 
   # Determine provider-specific token file
   local token_file="$VELUM_TOKEN_FILE"
-  if [[ "${CONFIG[provider]}" == "mullvad" ]]; then
-    token_file="${VELUM_TOKENS_DIR}/mullvad_token"
-  fi
+  case "${CONFIG[provider]}" in
+    mullvad) token_file="${VELUM_TOKENS_DIR}/mullvad_token" ;;
+    ivpn) token_file="${VELUM_TOKENS_DIR}/ivpn_token" ;;
+  esac
 
   # Check token (provider-specific)
   if ! check_token_expiry "$token_file"; then

@@ -173,6 +173,12 @@ test_public_ip() {
         is_vpn_ip=true
       fi
 
+      # IVPN datacenter providers
+      if [[ "$org" == *"IVPN"* ]] || [[ "$org" == *"Datapacket"* ]] || [[ "$org" == *"xTom"* ]] || \
+         [[ "$org" == *"FranTech"* ]] || [[ "$org" == *"HostHatch"* ]]; then
+        is_vpn_ip=true
+      fi
+
       if [[ "$is_vpn_ip" == "true" ]]; then
         echo "    VPN IP:     $PASS - Detected as VPN/datacenter IP"
         ((TESTS_PASSED++))
@@ -227,7 +233,7 @@ test_dns_leak() {
 
   if [[ -z "$vpn_dns" ]]; then
     # Try common VPN DNS addresses
-    for try_dns in 10.0.0.243 10.0.0.242 10.64.0.1; do
+    for try_dns in 10.0.0.243 10.0.0.242 10.64.0.1 10.0.254.1; do
       if nslookup -timeout=1 google.com "$try_dns" >/dev/null 2>&1; then
         vpn_dns="$try_dns"
         break
@@ -661,6 +667,8 @@ test_port_forwarding() {
     local provider_name="${CONFIG[provider]:-unknown}"
     if [[ "$provider_name" == "mullvad" ]]; then
       echo "    Status:     ${YELLOW}Not supported${NC} (Mullvad removed port forwarding)"
+    elif [[ "$provider_name" == "ivpn" ]]; then
+      echo "    Status:     ${YELLOW}Not supported${NC} (IVPN removed port forwarding)"
     else
       echo "    Status:     ${YELLOW}Not active${NC} (optional feature)"
     fi
@@ -725,6 +733,8 @@ test_vpn_detection() {
       *"Private Internet"*|*Mullvad*|*NordVPN*|*ExpressVPN*|*Surfshark*|*ProtonVPN*)
         datacenter_match=true ;;
       *Quadranet*|*Cogent*|*Glesys*|*Privex*|*31173*|*Arelion*|*DataPacket*|*Servinga*)
+        datacenter_match=true ;;
+      *IVPN*|*xTom*|*FranTech*|*HostHatch*|*BuyVM*)
         datacenter_match=true ;;
     esac
 

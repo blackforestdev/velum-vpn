@@ -31,11 +31,11 @@ load_status_config() {
 
 # Get provider-specific token file
 get_token_file() {
-  if [[ "${CONFIG[provider]:-}" == "mullvad" ]]; then
-    echo "${VELUM_TOKENS_DIR}/mullvad_token"
-  else
-    echo "$VELUM_TOKEN_FILE"
-  fi
+  case "${CONFIG[provider]:-}" in
+    mullvad) echo "${VELUM_TOKENS_DIR}/mullvad_token" ;;
+    ivpn) echo "${VELUM_TOKENS_DIR}/ivpn_token" ;;
+    *) echo "$VELUM_TOKEN_FILE" ;;
+  esac
 }
 
 # ============================================================================
@@ -179,6 +179,8 @@ show_status() {
     echo "  DNS:          ${C_GREEN}PIA${C_RESET} ($dns_servers)"
   elif [[ "$dns_servers" == "10.64.0.1" ]]; then
     echo "  DNS:          ${C_GREEN}Mullvad${C_RESET} ($dns_servers)"
+  elif [[ "$dns_servers" == "10.0.254.1" ]]; then
+    echo "  DNS:          ${C_GREEN}IVPN${C_RESET} ($dns_servers)"
   elif [[ -n "$dns_servers" ]]; then
     echo "  DNS:          $dns_servers"
   else
