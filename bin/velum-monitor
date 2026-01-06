@@ -196,13 +196,13 @@ check_kill_switch() {
       return 0
     fi
   else
-    # Linux: check nftables first (preferred), then iptables
-    # nftables uses "policy drop" or explicit "drop" rules
-    if nft list table inet velum_killswitch 2>/dev/null | grep -qi "drop\|reject"; then
+    # Linux: check if velum_killswitch table/chain exists
+    # More reliable than parsing rule contents
+    if nft list tables 2>/dev/null | grep -q "velum_killswitch"; then
       return 0
     fi
     # Fallback to iptables
-    if iptables -L VELUM_KILLSWITCH 2>/dev/null | grep -qi "DROP\|REJECT"; then
+    if iptables -L VELUM_KILLSWITCH -n 2>/dev/null | grep -q "Chain VELUM_KILLSWITCH"; then
       return 0
     fi
   fi
