@@ -21,6 +21,8 @@ export VELUM_ROOT
 # Source libraries
 source "$VELUM_ROOT/lib/velum-core.sh"
 source "$VELUM_ROOT/lib/velum-security.sh"
+source "$VELUM_ROOT/lib/velum-jurisdiction.sh"
+source "$VELUM_ROOT/lib/velum-detection.sh"
 source "$VELUM_ROOT/lib/os/detect.sh"
 source "$VELUM_ROOT/lib/providers/provider-base.sh"
 
@@ -149,7 +151,7 @@ phase_provider() {
       *) desc="VPN Provider" ;;
     esac
     echo "  $i. ${p^^} - $desc"
-    ((i++))
+    ((i++)) || true
   done < <(list_providers)
 
   echo
@@ -462,6 +464,175 @@ phase_features() {
 # PHASE 4: SERVER SELECTION
 # ============================================================================
 
+# Helper: Extract server data by provider format
+_extract_server_data() {
+  local server="$1"
+  local provider="$2"
+  local id name ip hostname country
+
+  case "$provider" in
+    mullvad)
+      id=$(echo "$server" | jq -r '.hostname')
+      name=$(echo "$server" | jq -r '"\(.country_name) - \(.city_name)"')
+      ip=$(echo "$server" | jq -r '.ipv4_addr_in // empty')
+      hostname="$id"
+      country=$(echo "$server" | jq -r '.country_name')
+      ;;
+    ivpn)
+      id=$(echo "$server" | jq -r '.hosts[0].hostname')
+      name=$(echo "$server" | jq -r '"\(.country) - \(.city)"')
+      ip=$(echo "$server" | jq -r '.hosts[0].host // empty')
+      hostname="$id"
+      country=$(echo "$server" | jq -r '.country')
+      ;;
+    *)  # PIA
+      id=$(echo "$server" | jq -r '.id')
+      name=$(echo "$server" | jq -r '.name')
+      ip=$(echo "$server" | jq -r '.servers.wg[0].ip // empty')
+      hostname=$(echo "$server" | jq -r '.servers.wg[0].cn // empty')
+      # PIA names are like "US New York" - extract country
+      country="${name%% *}"
+      ;;
+  esac
+
+  # Output: id|name|ip|hostname|country
+  echo "${id}|${name}|${ip}|${hostname}|${country}"
+}
+
+# Helper: Check detection status for servers before display
+# Usage: _check_server_detection max_check entry1 entry2 ...
+_check_server_detection() {
+  local max_check="${1:-30}"
+  shift
+  local entries=("$@")
+
+  # Collect unique IPs to check
+  local ips_to_check=()
+  local checked_ips=""
+  local i=0
+
+  for entry in "${entries[@]}"; do
+    [[ $i -ge $max_check ]] && break
+
+    local ip
+    ip=$(echo "$entry" | cut -d'|' -f4)
+    [[ -z "$ip" || "$ip" == "null" ]] && continue
+
+    # Skip if already in our list or cached
+    if [[ "$checked_ips" != *"|$ip|"* ]]; then
+      local cached
+      cached=$(get_cached_detection "$ip" 2>/dev/null || true)
+      if [[ -z "$cached" ]]; then
+        ips_to_check+=("$ip")
+      fi
+      checked_ips="${checked_ips}|${ip}|"
+    fi
+    ((i++)) || true
+  done
+
+  local total=${#ips_to_check[@]}
+  if [[ $total -eq 0 ]]; then
+    echo "Detection results cached for all servers."
+    return 0
+  fi
+
+  echo "Checking detection status for $total unique IPs..."
+  echo -n "Progress: "
+
+  local count=0
+  for ip in "${ips_to_check[@]}"; do
+    # Run check (this caches the result)
+    check_detection "$ip" >/dev/null 2>&1
+    ((count++)) || true
+
+    # Show progress
+    local pct=$((count * 100 / total))
+    echo -ne "\rProgress: ${count}/${total} (${pct}%) "
+  done
+
+  echo -e "\rProgress: Complete!              "
+}
+
+# Helper: Display enhanced server table
+# Usage: _display_server_table max_display entry1 entry2 entry3 ...
+_display_server_table() {
+  local max_display="${1:-30}"
+  shift
+  local entries=("$@")
+
+  echo
+  echo "Server Selection (sorted by latency):"
+  echo "───────────────────────────────────────────────────────────────────────────────────"
+  printf "  %-3s %7s   %-26s %-8s %-5s %-3s %s\n" "#" "Latency" "Location" "Alliance" "Priv" "Det" "Rec"
+  echo "───────────────────────────────────────────────────────────────────────────────────"
+
+  local i=1
+  for entry in "${entries[@]}"; do
+    [[ $i -gt $max_display ]] && break
+
+    # Parse entry: latency|id|name|ip|hostname|country
+    local latency id name ip hostname country
+    IFS='|' read -r latency id name ip hostname country <<< "$entry"
+
+    # Get jurisdiction info
+    local alliance privacy_rating privacy_bar
+    alliance=$(get_alliance "$country")
+    privacy_rating=$(get_privacy "$country")
+    privacy_bar=$(privacy_to_bar "$privacy_rating")
+
+    # Get detection status (from cache or "…" if not yet checked)
+    local detection detection_sym
+    detection=$(get_cached_detection "$ip")
+    if [[ -n "$detection" ]]; then
+      detection_sym=$(detection_to_symbol "$detection")
+    else
+      detection_sym="…"
+      detection="checking"
+    fi
+
+    # Calculate recommendation
+    local rec rec_stars
+    if [[ "$detection" != "checking" ]]; then
+      rec=$(calculate_recommendation "$alliance" "$privacy_rating" "$detection")
+    else
+      rec=$(calculate_recommendation "$alliance" "$privacy_rating" "clean")  # Assume clean for now
+    fi
+    rec_stars=$(recommendation_to_stars "$rec")
+
+    # Format latency
+    local latency_fmt
+    if [[ "$latency" =~ ^[0-9]+$ ]]; then
+      latency_fmt="${latency}ms"
+    else
+      latency_fmt="${latency}"
+    fi
+
+    # Truncate location if needed
+    local loc_display="${name}"
+    [[ ${#loc_display} -gt 26 ]] && loc_display="${loc_display:0:23}..."
+
+    # Color code based on recommendation
+    local row_color=""
+    local reset="${C_RESET:-}"
+    case "$rec" in
+      3) row_color="${C_GREEN:-}" ;;
+      2) row_color="" ;;
+      1) row_color="${C_YELLOW:-}" ;;
+      0) row_color="${C_RED:-}" ;;
+    esac
+
+    printf "%s%3d. %7s   %-26s %-8s %s  %s   %s%s\n" \
+      "$row_color" "$i" "$latency_fmt" "$loc_display" "$alliance" "$privacy_bar" "$detection_sym" "$rec_stars" "$reset"
+
+    ((i++)) || true
+  done
+
+  echo "───────────────────────────────────────────────────────────────────────────────────"
+  echo
+  print_jurisdiction_legend
+  echo
+}
+
 phase_server() {
   print_section "PHASE 4: SERVER SELECTION"
 
@@ -490,27 +661,32 @@ phase_server() {
 
   # Server selection method
   echo "Server selection:"
-  echo "  1. Auto (lowest latency)"
-  echo "  2. Manual selection"
+  echo "  1. Auto (lowest latency, best recommendation)"
+  echo "  2. Manual selection (view all servers with quality info)"
   echo
 
   local method
-  method=$(ask_choice "Select method" "Auto (lowest latency)" "Manual selection")
+  method=$(ask_choice "Select method" "Auto (recommended)" "Manual selection")
 
   if [[ "$method" == "Auto"* ]]; then
     CONFIG[server_auto]="true"
-    print_info "Will select server with lowest latency automatically."
+    print_info "Will select server with best combination of latency and quality."
   else
     CONFIG[server_auto]="false"
 
     # Latency threshold
     local threshold
-    threshold=$(ask_input "Maximum latency (seconds)" "0.05")
+    threshold=$(ask_input "Maximum latency (ms)" "200")
+    # Convert to ms if user entered seconds (e.g., 0.2)
+    if [[ "$threshold" =~ ^0\.[0-9]+$ ]]; then
+      threshold=$(awk "BEGIN {printf \"%.0f\", $threshold * 1000}")
+    fi
     CONFIG[max_latency]="$threshold"
 
     # Get and display server list
     echo
-    echo "Fetching server list..."
+    echo "Fetching server list and testing latency (threshold: ${threshold}ms)..."
+    echo
 
     local filters=""
     [[ "${CONFIG[allow_geo]}" != "true" ]] && filters="--geo false"
@@ -520,142 +696,76 @@ phase_server() {
     # shellcheck disable=SC2086
     servers=$(provider_filter_servers $filters)
 
-    # Display servers with latency
-    echo
-    echo "Available servers:"
-    echo "-----------------"
+    # Collect all servers with latency
+    local server_data=()
 
-    local i=1
+    while IFS= read -r server; do
+      local extracted id name ip hostname country latency
+
+      extracted=$(_extract_server_data "$server" "${CONFIG[provider]}")
+      IFS='|' read -r id name ip hostname country <<< "$extracted"
+
+      [[ -z "$ip" || "$ip" == "null" ]] && continue
+
+      # Test latency
+      echo -n "  Testing $name... "
+      latency=$(provider_test_latency "$id" 2>/dev/null || echo "9999")
+      if [[ "$latency" =~ ^[0-9.]+$ ]]; then
+        # Convert to integer ms if it's a float
+        latency=$(printf "%.0f" "$latency" 2>/dev/null || echo "$latency")
+        echo "${latency}ms"
+
+        # Only include if within threshold
+        if [[ "$latency" -le "$threshold" ]]; then
+          # Store: latency|id|name|ip|hostname|country
+          server_data+=("${latency}|${id}|${name}|${ip}|${hostname}|${country}")
+        fi
+      else
+        echo "timeout"
+      fi
+
+    done < <(echo "$servers" | jq -c '.[]' | head -80)
+
+    if [[ ${#server_data[@]} -eq 0 ]]; then
+      print_warn "No servers found within ${threshold}ms latency threshold."
+      print_info "Try increasing the maximum latency value."
+      CONFIG[server_auto]="true"
+      return
+    fi
+
+    # Sort by latency
+    IFS=$'\n' sorted_data=($(printf '%s\n' "${server_data[@]}" | sort -t'|' -k1 -n))
+    unset IFS
+
+    echo
+    echo "Found ${#sorted_data[@]} servers within ${threshold}ms threshold."
+    echo
+
+    # Check detection status for all servers before display
+    local server_count=${#sorted_data[@]}
+    _check_server_detection "$server_count" "${sorted_data[@]}"
+    echo
+
+    # Display enhanced table with detection results
+    _display_server_table "$server_count" "${sorted_data[@]}"
+
+    # Build selection arrays
     local region_ids=()
     local region_names=()
     local region_ips=()
     local region_hostnames=()
 
-    # Handle different provider server list formats
-    if [[ "${CONFIG[provider]}" == "mullvad" ]]; then
-      # Mullvad format: array of servers with hostname, country_name, city_name, ipv4_addr_in
-      while IFS= read -r server; do
-        local hostname name ip
-        hostname=$(echo "$server" | jq -r '.hostname')
-        name=$(echo "$server" | jq -r '"\(.country_name) - \(.city_name)"')
-        ip=$(echo "$server" | jq -r '.ipv4_addr_in')
+    local i=1
+    for entry in "${sorted_data[@]}"; do
+      local latency id name ip hostname country
+      IFS='|' read -r latency id name ip hostname country <<< "$entry"
+      region_ids+=("$id")
+      region_names+=("$name")
+      region_ips+=("$ip")
+      region_hostnames+=("$hostname")
+      ((i++)) || true
+    done
 
-        [[ -z "$ip" || "$ip" == "null" ]] && continue
-
-        # Test latency
-        local latency
-        latency=$(provider_test_latency "$hostname" 2>/dev/null || echo "N/A")
-
-        printf "%3d. %-35s  %10s ms\n" "$i" "$name ($hostname)" "$latency"
-
-        region_ids+=("$hostname")
-        region_names+=("$name")
-        region_ips+=("$ip")
-        region_hostnames+=("$hostname")
-
-        ((i++))
-        [[ $i -gt 20 ]] && break
-      done < <(echo "$servers" | jq -c '.[]')
-    elif [[ "${CONFIG[provider]}" == "ivpn" ]]; then
-      # IVPN format: array of gateways with country, city, hosts[]
-      while IFS= read -r server; do
-        local hostname name ip
-        hostname=$(echo "$server" | jq -r '.hosts[0].hostname')
-        name=$(echo "$server" | jq -r '"\(.country) - \(.city)"')
-        ip=$(echo "$server" | jq -r '.hosts[0].host')
-
-        [[ -z "$ip" || "$ip" == "null" ]] && continue
-
-        # Test latency
-        local latency
-        latency=$(provider_test_latency "$hostname" 2>/dev/null || echo "N/A")
-
-        printf "%3d. %-35s  %10s ms\n" "$i" "$name ($hostname)" "$latency"
-
-        region_ids+=("$hostname")
-        region_names+=("$name")
-        region_ips+=("$ip")
-        region_hostnames+=("$hostname")
-
-        ((i++))
-        [[ $i -gt 20 ]] && break
-      done < <(echo "$servers" | jq -c '.[]')
-    else
-      # PIA format: regions array with id, name, servers.wg[0]
-      # First pass: test latency for all servers and collect results
-      echo "Testing regions that respond faster than ${threshold} seconds..."
-      echo
-
-      local latency_results=()
-      local total_regions
-      total_regions=$(echo "$servers" | jq 'length')
-
-      while IFS= read -r region; do
-        local id name ip hostname
-        id=$(echo "$region" | jq -r '.id')
-        name=$(echo "$region" | jq -r '.name')
-        ip=$(echo "$region" | jq -r '.servers.wg[0].ip // empty')
-        hostname=$(echo "$region" | jq -r '.servers.wg[0].cn // empty')
-
-        [[ -z "$ip" ]] && continue
-
-        # Test latency
-        local latency
-        latency=$(provider_test_latency "$id" 2>/dev/null || echo "")
-
-        # Skip if latency is empty or not a valid number
-        if [[ -z "$latency" ]] || ! [[ "$latency" =~ ^[0-9.]+$ ]]; then
-          continue
-        fi
-
-        # Convert latency from ms to seconds
-        local latency_sec
-        latency_sec=$(awk "BEGIN {printf \"%.6f\", $latency/1000}")
-
-        # Compare against threshold (both in seconds)
-        local threshold_val
-        threshold_val=$(awk "BEGIN {printf \"%.6f\", $threshold}")
-
-        # Check if latency is within threshold using awk (avoids bc dependency)
-        if awk "BEGIN {exit !($latency_sec <= $threshold_val)}"; then
-          echo "Got latency ${latency_sec}s for region: $name"
-          # Store as: latency_ms|id|name|ip|hostname
-          latency_results+=("${latency}|${id}|${name}|${ip}|${hostname}")
-        fi
-      done < <(echo "$servers" | jq -c '.[]')
-
-      echo
-
-      if [[ ${#latency_results[@]} -eq 0 ]]; then
-        print_warn "No servers found within ${threshold}s latency threshold."
-        print_info "Try increasing the maximum latency value."
-        CONFIG[server_auto]="true"
-        return
-      fi
-
-      # Sort results by latency (numerically)
-      IFS=$'\n' sorted_results=($(printf '%s\n' "${latency_results[@]}" | sort -t'|' -k1 -n))
-      unset IFS
-
-      echo "Ordered list of servers with latency less than ${threshold} seconds:"
-      echo
-
-      for result in "${sorted_results[@]}"; do
-        local latency_ms id name ip hostname latency_sec
-        IFS='|' read -r latency_ms id name ip hostname <<< "$result"
-        latency_sec=$(echo "$latency_ms" | awk '{printf "%.6f", $1/1000}')
-
-        printf "%3d : %.6f %-20s %20s - %s\n" "$i" "$latency_sec" "$ip" "$id" "$name"
-
-        region_ids+=("$id")
-        region_names+=("$name")
-        region_ips+=("$ip")
-        region_hostnames+=("$hostname")
-        ((i++))
-      done
-    fi
-
-    echo
     local choice
     if ! read -r -p "Select server number [1-$((i-1))]: " choice; then
       echo -e "\n\nCancelled."

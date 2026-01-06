@@ -26,44 +26,73 @@ STATE_FILE="/tmp/velum-monitor.state"
 LAST_VPN_STATE="unknown"
 LAST_KS_STATE="unknown"
 LAST_HANDSHAKE_ALERT=0
+LAST_VPN_ALERT=0
+LAST_KS_ALERT=0
+NOTIFICATION_DEBOUNCE=5  # Minimum seconds between same notification type
 
 # ============================================================================
 # NOTIFICATIONS (Cross-platform)
 # ============================================================================
 
-# Send desktop notification with audio fallback
+# Get console user for running commands as logged-in user
+_get_notify_user() {
+  # Check VELUM_NOTIFY_USER (passed from parent process)
+  if [[ -n "${VELUM_NOTIFY_USER:-}" ]]; then
+    echo "$VELUM_NOTIFY_USER"
+    return 0
+  fi
+
+  # Check SUDO_USER
+  if [[ -n "${SUDO_USER:-}" ]]; then
+    echo "$SUDO_USER"
+    return 0
+  fi
+
+  # Get owner of /dev/console
+  local console_user
+  console_user=$(stat -f "%Su" /dev/console 2>/dev/null)
+  if [[ -n "$console_user" && "$console_user" != "root" ]]; then
+    echo "$console_user"
+    return 0
+  fi
+
+  return 1
+}
+
+# Send desktop notification with optional sound and speech
+# Usage: notify "Title" "Message" "urgency" ["speech_text"]
+# Urgency: low, normal, critical
 notify() {
   local title="$1"
   local message="$2"
-  local urgency="${3:-normal}"  # low, normal, critical
+  local urgency="${3:-normal}"
+  local speech="${4:-}"  # Optional speech text
 
   # Log the notification
   log_info "NOTIFY [$urgency]: $title - $message"
 
   if [[ "$VELUM_OS" == "macos" ]]; then
-    # macOS: try osascript notification (requires Terminal notification permissions)
+    local notify_user
+    notify_user=$(_get_notify_user)
+
+    # Determine sound based on urgency
     local sound=""
-    [[ "$urgency" == "critical" ]] && sound='with sound name "Basso"'
-    local notify_cmd="osascript -e 'display notification \"$message\" with title \"$title\" $sound'"
+    [[ "$urgency" == "critical" ]] && sound="Basso"
+    [[ "$urgency" == "normal" ]] && sound="Blow"
 
-    local notify_user="${SUDO_USER:-${VELUM_NOTIFY_USER:-}}"
-    if [[ $EUID -eq 0 && -n "$notify_user" ]]; then
-      sudo -u "$notify_user" bash -c "$notify_cmd" 2>/dev/null || true
-    else
-      eval "$notify_cmd" 2>/dev/null || true
-    fi
+    # Send visual notification using os_notify from macos.sh
+    os_notify "$title" "$message" "$sound"
 
-    # Audio alert for critical notifications (always works)
-    if [[ "$urgency" == "critical" ]]; then
-      # Use say command for audio alert
-      local say_user="${SUDO_USER:-${VELUM_NOTIFY_USER:-}}"
-      local say_cmd="say -v Samantha 'VPN Alert: $title'"
-      if [[ $EUID -eq 0 && -n "$say_user" ]]; then
-        sudo -u "$say_user" bash -c "$say_cmd" 2>/dev/null &
+    # Speech synthesis for important alerts
+    if [[ -n "$speech" && -n "$notify_user" ]]; then
+      # Use different voices/rates for urgency
+      if [[ "$urgency" == "critical" ]]; then
+        sudo -u "$notify_user" say -v "Samantha" -r 200 "$speech" 2>/dev/null &
       else
-        eval "$say_cmd" 2>/dev/null &
+        sudo -u "$notify_user" say -v "Samantha" -r 180 "$speech" 2>/dev/null &
       fi
     fi
+
   else
     # Linux: use notify-send
     local urgency_flag=""
@@ -72,8 +101,10 @@ notify() {
       critical) urgency_flag="-u critical" ;;
       *) urgency_flag="-u normal" ;;
     esac
+
     if command -v notify-send >/dev/null 2>&1; then
-      local notify_user="${SUDO_USER:-${VELUM_NOTIFY_USER:-}}"
+      local notify_user
+      notify_user=$(_get_notify_user)
       if [[ $EUID -eq 0 && -n "$notify_user" ]]; then
         sudo -u "$notify_user" DISPLAY=:0 DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$(id -u "$notify_user")/bus" \
           notify-send $urgency_flag "$title" "$message" 2>/dev/null || true
@@ -90,6 +121,15 @@ notify() {
         aplay /usr/share/sounds/alsa/Front_Center.wav 2>/dev/null &
       fi
     fi
+
+    # Speech synthesis for Linux (using espeak or spd-say)
+    if [[ -n "$speech" ]]; then
+      if command -v spd-say >/dev/null 2>&1; then
+        spd-say "$speech" 2>/dev/null &
+      elif command -v espeak >/dev/null 2>&1; then
+        espeak "$speech" 2>/dev/null &
+      fi
+    fi
   fi
 }
 
@@ -97,17 +137,13 @@ notify() {
 # HEALTH CHECKS
 # ============================================================================
 
-# Check if VPN interface is up
+# Check if WireGuard VPN interface is up
+# Uses 'wg show interfaces' to detect active WireGuard interfaces specifically
+# (not just any utun, which could be iCloud Private Relay, etc.)
 check_vpn_interface() {
-  local iface=""
-
-  if [[ "$VELUM_OS" == "macos" ]]; then
-    iface=$(ifconfig 2>/dev/null | grep -E "^utun[0-9]+:" | head -1 | cut -d: -f1)
-  else
-    iface=$(ip link show type wireguard 2>/dev/null | head -1 | awk -F: '{print $2}' | tr -d ' ')
-  fi
-
-  [[ -n "$iface" ]]
+  local wg_ifaces
+  wg_ifaces=$(sudo wg show interfaces 2>/dev/null || echo "")
+  [[ -n "$wg_ifaces" ]]
 }
 
 # Get handshake age in seconds
@@ -209,23 +245,55 @@ handshake_age=$handshake_age
 EOF
     chmod 644 "$STATE_FILE" 2>/dev/null || true
 
-    # Alert on VPN state change
+    # Alert on VPN state change (with debounce)
     if [[ "$vpn_up" == "true" && "$LAST_VPN_STATE" == "false" ]]; then
-      notify "VPN Connected" "VPN connection restored" "normal"
-      log_info "VPN connection restored"
+      if [[ $((now - LAST_VPN_ALERT)) -gt "$NOTIFICATION_DEBOUNCE" ]]; then
+        notify "VPN Connected" "VPN connection restored" "normal" "VPN connection restored"
+        log_info "VPN connection restored"
+        LAST_VPN_ALERT=$now
+      fi
     elif [[ "$vpn_up" == "false" && "$LAST_VPN_STATE" == "true" ]]; then
-      notify "VPN Disconnected" "VPN connection lost! Kill switch should block traffic." "critical"
-      log_warn "VPN connection lost"
+      # Check if this was an intentional disconnect
+      if [[ ! -f "/tmp/velum-intentional-disconnect" ]]; then
+        if [[ $((now - LAST_VPN_ALERT)) -gt "$NOTIFICATION_DEBOUNCE" ]]; then
+          notify "VPN Disconnected" "VPN connection lost! Kill switch is blocking traffic." "critical" "Warning: VPN connection lost"
+          log_warn "VPN connection lost"
+          LAST_VPN_ALERT=$now
+        fi
+      else
+        log_info "VPN disconnected intentionally"
+      fi
     fi
 
-    # Alert on kill switch state change
-    if [[ "$vpn_up" == "true" ]]; then
-      if [[ "$ks_active" == "false" && "$LAST_KS_STATE" == "true" ]]; then
-        notify "Kill Switch Disabled" "Kill switch was disabled while VPN is active!" "critical"
+    # Alert on kill switch state change (with debounce)
+    # Only speak kill switch alerts if VPN state didn't also change this cycle
+    # (If VPN went down, kill switch disabling is expected - don't double-speak)
+    local vpn_changed=false
+    [[ "$vpn_up" != "$LAST_VPN_STATE" && "$LAST_VPN_STATE" != "unknown" ]] && vpn_changed=true
+
+    if [[ "$ks_active" == "false" && "$LAST_KS_STATE" == "true" ]]; then
+      if [[ $((now - LAST_KS_ALERT)) -gt "$NOTIFICATION_DEBOUNCE" ]]; then
+        if [[ "$vpn_up" == "true" ]]; then
+          # Kill switch disabled while VPN still up - this is bad!
+          notify "Kill Switch Disabled" "Kill switch was disabled while VPN is active!" "critical" "Warning: Kill switch disabled"
+        else
+          # Kill switch disabled because VPN went down - expected, visual only
+          notify "Kill Switch Disabled" "Kill switch disabled." "normal"
+        fi
         log_warn "Kill switch disabled unexpectedly"
-      elif [[ "$ks_active" == "true" && "$LAST_KS_STATE" == "false" ]]; then
-        notify "Kill Switch Enabled" "Kill switch protection restored" "normal"
+        LAST_KS_ALERT=$now
+      fi
+    elif [[ "$ks_active" == "true" && "$LAST_KS_STATE" == "false" ]]; then
+      if [[ $((now - LAST_KS_ALERT)) -gt "$NOTIFICATION_DEBOUNCE" ]]; then
+        if [[ "$vpn_changed" == "true" ]]; then
+          # VPN just reconnected and kill switch came up - visual only, VPN notification has speech
+          notify "Kill Switch Enabled" "Kill switch protection restored" "normal"
+        else
+          # Kill switch restored independently - speak it
+          notify "Kill Switch Enabled" "Kill switch protection restored" "normal" "Kill switch restored"
+        fi
         log_info "Kill switch restored"
+        LAST_KS_ALERT=$now
       fi
     fi
 
@@ -258,15 +326,14 @@ cmd_start() {
     return 1
   fi
 
-  # Check if already running
-  if [[ -f "$PID_FILE" ]]; then
-    local pid
-    pid=$(cat "$PID_FILE")
-    if kill -0 "$pid" 2>/dev/null; then
-      echo "Monitor already running (PID: $pid)"
-      return 0
-    fi
-    rm -f "$PID_FILE"
+  # Kill any existing monitor daemons (prevents orphaned processes)
+  local existing_pids
+  existing_pids=$(pgrep -f "velum-monitor daemon" 2>/dev/null || true)
+  if [[ -n "$existing_pids" ]]; then
+    echo "Cleaning up existing monitor processes..."
+    pkill -9 -f "velum-monitor daemon" 2>/dev/null || true
+    sleep 0.5
+    rm -f "$PID_FILE" "$STATE_FILE"
   fi
 
   echo "Starting VPN monitor..."
@@ -291,22 +358,17 @@ cmd_start() {
 }
 
 cmd_stop() {
-  if [[ ! -f "$PID_FILE" ]]; then
-    echo "Monitor not running"
-    return 0
-  fi
+  # Kill all monitor daemons (not just the one in PID file)
+  local existing_pids
+  existing_pids=$(pgrep -f "velum-monitor daemon" 2>/dev/null || true)
 
-  local pid
-  pid=$(cat "$PID_FILE")
-
-  if kill -0 "$pid" 2>/dev/null; then
-    echo "Stopping monitor (PID: $pid)..."
-    kill "$pid" 2>/dev/null || true
+  if [[ -n "$existing_pids" ]]; then
+    echo "Stopping monitor processes..."
+    pkill -9 -f "velum-monitor daemon" 2>/dev/null || true
     rm -f "$PID_FILE" "$STATE_FILE"
     echo "Monitor stopped"
-    notify "VPN Monitor Stopped" "Background monitoring has been disabled." "low"
   else
-    echo "Monitor not running (stale PID file)"
+    echo "Monitor not running"
     rm -f "$PID_FILE" "$STATE_FILE"
   fi
 }

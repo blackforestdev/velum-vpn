@@ -397,8 +397,37 @@ os_killswitch_rule_count() {
 # NOTIFICATIONS
 # ============================================================================
 
+# Get the console user (the user logged into the GUI)
+# Works even when SUDO_USER is not set (e.g., from PostDown scripts)
+_get_console_user() {
+  # Method 1: Check SUDO_USER (set when using sudo)
+  if [[ -n "${SUDO_USER:-}" ]]; then
+    echo "$SUDO_USER"
+    return 0
+  fi
+
+  # Method 2: Get owner of /dev/console (the logged-in GUI user)
+  local console_user
+  console_user=$(stat -f "%Su" /dev/console 2>/dev/null)
+  if [[ -n "$console_user" && "$console_user" != "root" ]]; then
+    echo "$console_user"
+    return 0
+  fi
+
+  # Method 3: Check who is logged into console
+  console_user=$(who 2>/dev/null | grep console | head -1 | awk '{print $1}')
+  if [[ -n "$console_user" ]]; then
+    echo "$console_user"
+    return 0
+  fi
+
+  return 1
+}
+
 # Send system notification
 # Usage: os_notify "Title" "Message" ["sound"]
+# Note: Sound plays via osascript notification sound (depends on System Settings)
+# For guaranteed audio alerts, use the say command separately
 os_notify() {
   local title="$1"
   local message="$2"
@@ -409,7 +438,21 @@ os_notify() {
     script="$script sound name \"$sound\""
   fi
 
-  osascript -e "$script" 2>/dev/null || true
+  # When running as root, notifications need to run as the console user
+  # to show in their notification center (not root's)
+  if [[ $EUID -eq 0 ]]; then
+    local notify_user
+    notify_user=$(_get_console_user)
+
+    if [[ -n "$notify_user" ]]; then
+      sudo -u "$notify_user" osascript -e "$script" 2>/dev/null || true
+    else
+      # Fallback: try running as root (probably won't show notification)
+      osascript -e "$script" 2>/dev/null || true
+    fi
+  else
+    osascript -e "$script" 2>/dev/null || true
+  fi
 }
 
 # ============================================================================

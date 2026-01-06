@@ -147,12 +147,39 @@ find_best_server() {
 # WIREGUARD CONNECTION
 # ============================================================================
 
-# Generate WireGuard keypair
-generate_wg_keys() {
-  log_info "Generating WireGuard keys..."
+# WireGuard key storage
+WG_KEY_FILE="${VELUM_TOKENS_DIR}/wg_private_key"
 
-  WG_PRIVATE_KEY=$(wg genkey)
-  WG_PUBLIC_KEY=$(echo "$WG_PRIVATE_KEY" | wg pubkey)
+# Generate or load WireGuard keypair
+generate_wg_keys() {
+  # Check if we have a saved key
+  if [[ -f "$WG_KEY_FILE" ]]; then
+    log_info "Loading existing WireGuard key..."
+    WG_PRIVATE_KEY=$(cat "$WG_KEY_FILE")
+    WG_PUBLIC_KEY=$(echo "$WG_PRIVATE_KEY" | wg pubkey)
+    WG_KEY_REUSED=true
+  else
+    log_info "Generating WireGuard keys..."
+    WG_PRIVATE_KEY=$(wg genkey)
+    WG_PUBLIC_KEY=$(echo "$WG_PRIVATE_KEY" | wg pubkey)
+
+    # Save the key for future use
+    ensure_config_dir "$VELUM_TOKENS_DIR" 700
+    echo "$WG_PRIVATE_KEY" > "$WG_KEY_FILE"
+    chmod 600 "$WG_KEY_FILE"
+
+    # Fix ownership if running as root via sudo
+    if [[ -n "${SUDO_USER:-}" ]]; then
+      local sudo_uid sudo_gid
+      sudo_uid=$(id -u "$SUDO_USER" 2>/dev/null)
+      sudo_gid=$(id -g "$SUDO_USER" 2>/dev/null)
+      if [[ -n "$sudo_uid" && -n "$sudo_gid" ]]; then
+        chown "$sudo_uid:$sudo_gid" "$WG_KEY_FILE"
+      fi
+    fi
+
+    WG_KEY_REUSED=false
+  fi
 
   # Mark for cleanup
   mark_sensitive WG_PRIVATE_KEY

@@ -70,8 +70,9 @@ export VELUM_CONFIG_DIR
 VELUM_CONFIG_FILE="${VELUM_CONFIG_DIR}/velum.conf"
 VELUM_TOKENS_DIR="${VELUM_CONFIG_DIR}/tokens"
 VELUM_STATE_DIR="${VELUM_CONFIG_DIR}/state"
+VELUM_CACHE_DIR="${HOME}/.cache/velum"
 
-export VELUM_CONFIG_FILE VELUM_TOKENS_DIR VELUM_STATE_DIR
+export VELUM_CONFIG_FILE VELUM_TOKENS_DIR VELUM_STATE_DIR VELUM_CACHE_DIR
 
 # Ensure config directory exists with proper permissions
 ensure_config_dir() {
@@ -99,6 +100,7 @@ init_config_dirs() {
   ensure_config_dir "$VELUM_CONFIG_DIR" 700
   ensure_config_dir "$VELUM_TOKENS_DIR" 700
   ensure_config_dir "$VELUM_STATE_DIR" 700
+  ensure_config_dir "$VELUM_CACHE_DIR" 700
 }
 
 # Legacy config path (for migration)

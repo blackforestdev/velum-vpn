@@ -89,13 +89,19 @@ main() {
   # 1. Stop port forwarding
   stop_port_forwarding
 
-  # 2. Stop WireGuard (this triggers PostDown which disables kill switch)
+  # 2. Mark this as an intentional disconnect (so PostDown doesn't send alert)
+  touch /tmp/velum-intentional-disconnect 2>/dev/null || true
+
+  # 3. Stop WireGuard (this triggers PostDown which disables kill switch)
   stop_wireguard
 
-  # 3. Restore IPv6 (if it was disabled)
+  # 4. Clean up the flag
+  rm -f /tmp/velum-intentional-disconnect 2>/dev/null || true
+
+  # 5. Restore IPv6 (if it was disabled)
   restore_ipv6
 
-  # 4. Restore DNS
+  # 6. Restore DNS
   restore_dns
 
   echo
