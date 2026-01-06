@@ -223,9 +223,14 @@ test_dns_leak() {
       vpn_dns=$(scutil --dns 2>/dev/null | grep "nameserver\[" | awk '{print $3}' | grep "^10\." | head -1)
     fi
   else
-    # Linux
+    # Linux - check /etc/resolv.conf (velum sets DNS directly on Linux)
     if [[ -f /etc/resolv.conf ]]; then
       dns_servers=$(grep "^nameserver" /etc/resolv.conf 2>/dev/null | awk '{print $2}' | sort -u | tr '\n' ' ')
+      # On Linux, velum writes DNS to resolv.conf, not WireGuard config
+      if [[ -z "$vpn_dns" ]]; then
+        # Get first 10.x.x.x address (VPN provider DNS)
+        vpn_dns=$(grep "^nameserver" /etc/resolv.conf 2>/dev/null | awk '{print $2}' | grep "^10\." | head -1)
+      fi
     fi
   fi
 
@@ -289,6 +294,12 @@ test_dns_leak() {
       has_fallback=true
     fi
   fi
+  # On Linux, also check /etc/resolv.conf (velum sets DNS directly)
+  if [[ "$VELUM_OS" != "macos" && -f /etc/resolv.conf ]]; then
+    if grep -q "nameserver.*$fallback_dns" /etc/resolv.conf 2>/dev/null; then
+      has_fallback=true
+    fi
+  fi
 
   if [[ "$has_fallback" == "true" ]]; then
     # Check if Quad9 is routed through VPN
@@ -299,7 +310,7 @@ test_dns_leak() {
       quad9_route=$(ip route get "$fallback_dns" 2>/dev/null | grep -o "dev [^ ]*" | awk '{print $2}')
     fi
 
-    if [[ "$quad9_route" == utun* ]] || [[ "$quad9_route" == wg* ]]; then
+    if [[ "$quad9_route" == utun* ]] || [[ "$quad9_route" == wg* ]] || [[ "$quad9_route" == velum* ]]; then
       echo "    Fallback:   $PASS - Quad9 ($fallback_dns) via tunnel ($quad9_route)"
       ((TESTS_PASSED++))
     elif [[ -n "$quad9_route" ]]; then
@@ -335,26 +346,39 @@ test_routes() {
       ((TESTS_FAILED++))
     fi
   else
-    # Linux
+    # Linux - wg-quick uses fwmark-based policy routing, not traditional default routes
     local default_route
     default_route=$(ip route show default 2>/dev/null)
 
-    if [[ "$default_route" == *"wg"* ]] || [[ "$default_route" == *"pia"* ]]; then
+    if [[ "$default_route" == *"wg"* ]] || [[ "$default_route" == *"velum"* ]] || [[ "$default_route" == *"pia"* ]]; then
       echo "    Default:    $PASS - Routed through VPN"
       ((TESTS_PASSED++))
     else
       # Check for 0.0.0.0/1 and 128.0.0.0/1 routes
       local route_0 route_128
-      route_0=$(ip route show 0.0.0.0/1 2>/dev/null | grep -E "wg|pia")
-      route_128=$(ip route show 128.0.0.0/1 2>/dev/null | grep -E "wg|pia")
+      route_0=$(ip route show 0.0.0.0/1 2>/dev/null | grep -E "wg|velum|pia")
+      route_128=$(ip route show 128.0.0.0/1 2>/dev/null | grep -E "wg|velum|pia")
 
       if [[ -n "$route_0" && -n "$route_128" ]]; then
         echo "    0.0.0.0/1:  $PASS - Routed through VPN"
         echo "    128.0.0.0/1: $PASS - Routed through VPN"
         ((TESTS_PASSED++))
       else
-        echo "    VPN Routes: $FAIL - Default routes not through VPN"
-        ((TESTS_FAILED++))
+        # Check for wg-quick's fwmark policy routing (table 51820)
+        # Route shows as "default dev velum" in table 51820
+        # Rule shows "lookup 51820" with fwmark 0xca6c (51820 decimal)
+        local fwmark_route
+        fwmark_route=$(ip route show table 51820 2>/dev/null | grep -E "default|0.0.0.0/0")
+        local fwmark_rule
+        fwmark_rule=$(ip rule show 2>/dev/null | grep -E "lookup 51820|fwmark.*51820|fwmark.*0xca6c")
+
+        if [[ -n "$fwmark_route" && -n "$fwmark_rule" ]]; then
+          echo "    Policy:     $PASS - fwmark routing via table 51820"
+          ((TESTS_PASSED++))
+        else
+          echo "    VPN Routes: $FAIL - Default routes not through VPN"
+          ((TESTS_FAILED++))
+        fi
       fi
     fi
   fi

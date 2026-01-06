@@ -398,7 +398,10 @@ _enable_iptables_killswitch() {
   iptables -A "$VELUM_IPTABLES_CHAIN" -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
   iptables -A "$VELUM_IPTABLES_CHAIN" -o "$vpn_iface" -j ACCEPT
   iptables -A "$VELUM_IPTABLES_CHAIN" -i "$vpn_iface" -j ACCEPT
+  # Allow traffic to/from VPN server (WireGuard handshake)
   iptables -A "$VELUM_IPTABLES_CHAIN" -o "$physical_iface" -p udp -d "$vpn_ip" --dport "$vpn_port" -j ACCEPT
+  iptables -A "$VELUM_IPTABLES_CHAIN" -i "$physical_iface" -p udp -s "$vpn_ip" --sport "$vpn_port" -j ACCEPT
+  # Allow DHCP
   iptables -A "$VELUM_IPTABLES_CHAIN" -o "$physical_iface" -p udp --sport 68 --dport 67 -j ACCEPT
   iptables -A "$VELUM_IPTABLES_CHAIN" -i "$physical_iface" -p udp --sport 67 --dport 68 -j ACCEPT
 
@@ -494,6 +497,9 @@ table inet $VELUM_NFT_TABLE {
 
     # Allow VPN interface
     iifname \"$vpn_iface\" accept
+
+    # Allow from VPN server (WireGuard handshake response)
+    iifname \"$physical_iface\" udp sport $vpn_port ip saddr $vpn_ip accept
 
     # Allow DHCP
     udp sport 67 udp dport 68 accept

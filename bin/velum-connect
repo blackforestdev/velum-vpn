@@ -207,7 +207,11 @@ PrivateKey = $WG_PRIVATE_KEY"
   # Add DNS with encrypted fallback
   # Primary: VPN provider DNS (e.g., PIA 10.0.0.243)
   # Secondary: Quad9 (9.9.9.9) - routed through tunnel for encryption
-  if [[ -n "$dns_server" ]]; then
+  #
+  # On Linux, we skip DNS in WireGuard config because wg-quick tries to use
+  # resolvconf which may not be installed. Instead, velum manages DNS directly
+  # via os_set_dns() after WireGuard starts.
+  if [[ -n "$dns_server" && "$VELUM_OS" != "linux" ]]; then
     config="$config
 DNS = $dns_server, 9.9.9.9"
   fi
@@ -231,11 +235,21 @@ PostDown = $VELUM_ROOT/bin/velum-killswitch disable
 PostDown = $VELUM_ROOT/bin/velum-killswitch notify"
   fi
 
-  # Add DNS route fix for macOS - ensure DNS goes through tunnel
-  if [[ "$(uname)" == "Darwin" && -n "$dns_server" ]]; then
-    config="$config
+  # Add DNS route fix - ensure DNS goes through tunnel
+  # PIA uses 10.0.0.243 which may conflict with common LAN subnets
+  if [[ -n "$dns_server" ]]; then
+    if [[ "$(uname)" == "Darwin" ]]; then
+      config="$config
 PostUp = route -q -n add -host $dns_server -interface %i 2>/dev/null || true
 PostUp = route -q -n add -host 9.9.9.9 -interface %i 2>/dev/null || true"
+    else
+      # Linux: add host routes for DNS servers through VPN interface
+      config="$config
+PostUp = ip route add $dns_server/32 dev %i 2>/dev/null || true
+PostUp = ip route add 9.9.9.9/32 dev %i 2>/dev/null || true
+PostDown = ip route del $dns_server/32 dev %i 2>/dev/null || true
+PostDown = ip route del 9.9.9.9/32 dev %i 2>/dev/null || true"
+    fi
   fi
 
   # Peer section
@@ -465,6 +479,16 @@ main() {
 
   # Start WireGuard
   start_wireguard
+
+  # Set DNS on Linux (we handle it directly instead of via wg-quick/resolvconf)
+  if [[ "$VELUM_OS" == "linux" && -n "$dns_server" ]]; then
+    log_info "Configuring DNS via velum..."
+    if os_set_dns "$dns_server" "9.9.9.9"; then
+      print_ok "DNS configured ($dns_server, 9.9.9.9)"
+    else
+      print_warn "Could not configure DNS - manual setup may be required"
+    fi
+  fi
 
   # Port forwarding
   start_port_forwarding

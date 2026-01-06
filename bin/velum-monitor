@@ -48,9 +48,14 @@ _get_notify_user() {
     return 0
   fi
 
-  # Get owner of /dev/console
+  # Get owner of /dev/console (OS-specific stat syntax)
   local console_user
-  console_user=$(stat -f "%Su" /dev/console 2>/dev/null)
+  if [[ "$VELUM_OS" == "macos" ]]; then
+    console_user=$(stat -f "%Su" /dev/console 2>/dev/null)
+  else
+    # Linux: try /dev/tty1 or pts/0 since /dev/console is root-owned
+    console_user=$(who 2>/dev/null | head -1 | awk '{print $1}')
+  fi
   if [[ -n "$console_user" && "$console_user" != "root" ]]; then
     echo "$console_user"
     return 0
@@ -140,16 +145,18 @@ notify() {
 # Check if WireGuard VPN interface is up
 # Uses 'wg show interfaces' to detect active WireGuard interfaces specifically
 # (not just any utun, which could be iCloud Private Relay, etc.)
+# Note: daemon runs as root, so no sudo needed
 check_vpn_interface() {
   local wg_ifaces
-  wg_ifaces=$(sudo wg show interfaces 2>/dev/null || echo "")
+  wg_ifaces=$(wg show interfaces 2>/dev/null || echo "")
   [[ -n "$wg_ifaces" ]]
 }
 
 # Get handshake age in seconds
+# Note: daemon runs as root, so no sudo needed
 get_handshake_age() {
   local wg_output
-  wg_output=$(sudo wg show 2>/dev/null || echo "")
+  wg_output=$(wg show 2>/dev/null || echo "")
 
   if [[ -z "$wg_output" ]]; then
     echo "999999"
@@ -181,18 +188,21 @@ get_handshake_age() {
 }
 
 # Check if kill switch is active
+# Note: daemon runs as root, so no sudo needed
 check_kill_switch() {
   if [[ "$VELUM_OS" == "macos" ]]; then
     # Check pf anchor
-    if sudo pfctl -a velum_killswitch -s rules 2>/dev/null | grep -q "block"; then
+    if pfctl -a velum_killswitch -s rules 2>/dev/null | grep -q "block"; then
       return 0
     fi
   else
-    # Linux: check iptables or nftables
-    if sudo iptables -L VELUM_KILLSWITCH 2>/dev/null | grep -q "DROP"; then
+    # Linux: check nftables first (preferred), then iptables
+    # nftables uses "policy drop" or explicit "drop" rules
+    if nft list table inet velum_killswitch 2>/dev/null | grep -qi "drop\|reject"; then
       return 0
     fi
-    if sudo nft list table inet velum_killswitch 2>/dev/null | grep -q "drop"; then
+    # Fallback to iptables
+    if iptables -L VELUM_KILLSWITCH 2>/dev/null | grep -qi "DROP\|REJECT"; then
       return 0
     fi
   fi
@@ -341,6 +351,9 @@ cmd_start() {
   # Start daemon in background (already running as root)
   # Pass the original user for notifications
   local log_file="/tmp/velum-monitor.log"
+
+  # Clear old log on fresh start
+  : > "$log_file"
   local orig_user="${SUDO_USER:-$USER}"
   VELUM_NOTIFY_USER="$orig_user" nohup "$0" daemon >> "$log_file" 2>&1 &
   disown 2>/dev/null || true
