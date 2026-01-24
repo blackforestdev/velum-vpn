@@ -148,22 +148,26 @@ show_status() {
   # Security status
   echo "Security:"
 
-  # Kill switch
-  local ks_status
-  ks_status=$(os_killswitch_status 2>/dev/null || echo "unknown")
-  case "$ks_status" in
-    active)
-      local rule_count
-      rule_count=$(os_killswitch_rule_count 2>/dev/null || echo "?")
-      echo "  Kill switch:  ${C_GREEN}ACTIVE${C_RESET} ($rule_count rules)"
-      ;;
-    inactive)
-      echo "  Kill switch:  ${C_YELLOW}INACTIVE${C_RESET}"
-      ;;
-    *)
-      echo "  Kill switch:  ${C_DIM}Unknown${C_RESET}"
-      ;;
-  esac
+  # Kill switch (requires root to query firewall rules accurately)
+  if [[ $EUID -ne 0 ]]; then
+    echo "  Kill switch:  ${C_YELLOW}Unknown${C_RESET} (run with sudo)"
+  else
+    local ks_status
+    ks_status=$(os_killswitch_status 2>/dev/null || echo "unknown")
+    case "$ks_status" in
+      active)
+        local rule_count
+        rule_count=$(os_killswitch_rule_count 2>/dev/null || echo "?")
+        echo "  Kill switch:  ${C_GREEN}ACTIVE${C_RESET} ($rule_count rules)"
+        ;;
+      inactive)
+        echo "  Kill switch:  ${C_YELLOW}INACTIVE${C_RESET}"
+        ;;
+      *)
+        echo "  Kill switch:  ${C_DIM}Unknown${C_RESET}"
+        ;;
+    esac
+  fi
 
   # IPv6
   if os_ipv6_enabled 2>/dev/null; then
@@ -189,14 +193,24 @@ show_status() {
 
   echo
 
-  # Port forwarding
-  if [[ -f /tmp/velum-pf.pid ]]; then
-    local pf_pid
-    pf_pid=$(cat /tmp/velum-pf.pid 2>/dev/null || echo "")
-    if [[ -n "$pf_pid" ]] && kill -0 "$pf_pid" 2>/dev/null; then
-      echo "Port Forward:   ${C_GREEN}ACTIVE${C_RESET} (PID: $pf_pid)"
+  # Port forwarding (root-only runtime files)
+  if [[ -f "$VELUM_RUN_DIR/pf.pid" ]]; then
+    if [[ ! -r "$VELUM_RUN_DIR/pf.pid" ]]; then
+      echo "Port Forward:   ${C_YELLOW}Unknown${C_RESET} (run with sudo)"
     else
-      echo "Port Forward:   ${C_YELLOW}INACTIVE${C_RESET}"
+      local pf_pid
+      pf_pid=$(cat "$VELUM_RUN_DIR/pf.pid" 2>/dev/null || echo "")
+      if [[ -n "$pf_pid" ]] && kill -0 "$pf_pid" 2>/dev/null; then
+        echo "Port Forward:   ${C_GREEN}ACTIVE${C_RESET} (PID: $pf_pid)"
+        # Show the port if available
+        if [[ -f "$VELUM_RUN_DIR/pf.port" ]]; then
+          local pf_port
+          pf_port=$(cat "$VELUM_RUN_DIR/pf.port" 2>/dev/null || echo "")
+          [[ -n "$pf_port" ]] && echo "Forwarded Port: ${C_GREEN}$pf_port${C_RESET}"
+        fi
+      else
+        echo "Port Forward:   ${C_YELLOW}INACTIVE${C_RESET}"
+      fi
     fi
   fi
 

@@ -28,6 +28,8 @@ security_check "$0" || exit 1
 # WireGuard config path
 WG_CONF_PATH="/etc/wireguard/velum.conf"
 
+# Runtime directory (VELUM_RUN_DIR from velum-core.sh is OS-specific)
+
 # Configuration file (from velum-core.sh)
 CONFIG_FILE="$VELUM_CONFIG_FILE"
 
@@ -345,7 +347,11 @@ start_port_forwarding() {
   ) &
 
   PF_PID=$!
-  echo "$PF_PID" > /tmp/velum-pf.pid
+  ensure_run_dir
+  echo "$PF_PID" > "$VELUM_RUN_DIR/pf.pid"
+  chmod 600 "$VELUM_RUN_DIR/pf.pid"
+  echo "$port" > "$VELUM_RUN_DIR/pf.port"
+  chmod 600 "$VELUM_RUN_DIR/pf.port"
   echo "Port forwarding keepalive running (PID: $PF_PID)"
 }
 
@@ -390,7 +396,7 @@ show_connection_info() {
   echo "  ${C_GREEN}sudo velum-disconnect${C_RESET}"
   echo
   echo "To check status:"
-  echo "  ${C_GREEN}velum-status${C_RESET}"
+  echo "  ${C_GREEN}sudo velum-status${C_RESET}"
   echo
 }
 
@@ -409,6 +415,7 @@ main() {
 
   # Check requirements
   require_cmd wg-quick wireguard-tools
+  require_cmd wg wireguard-tools  # Needed for key generation
   require_cmd curl curl
   require_cmd jq jq
 

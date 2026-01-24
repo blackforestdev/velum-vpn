@@ -19,19 +19,22 @@ source "$VELUM_ROOT/lib/os/detect.sh"
 # WireGuard config path
 WG_CONF_PATH="/etc/wireguard/velum.conf"
 
+# Runtime directory (VELUM_RUN_DIR from velum-core.sh is OS-specific)
+
 # ============================================================================
 # DISCONNECT
 # ============================================================================
 
 stop_port_forwarding() {
-  if [[ -f /tmp/velum-pf.pid ]]; then
+  local pf_pid_file="$VELUM_RUN_DIR/pf.pid"
+  if [[ -f "$pf_pid_file" ]]; then
     local pid
-    pid=$(cat /tmp/velum-pf.pid 2>/dev/null || echo "")
+    pid=$(cat "$pf_pid_file" 2>/dev/null || echo "")
     if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then
       log_info "Stopping port forwarding keepalive..."
       kill "$pid" 2>/dev/null || true
     fi
-    rm -f /tmp/velum-pf.pid
+    rm -f "$pf_pid_file" "$VELUM_RUN_DIR/pf.port"
   fi
 }
 
@@ -90,13 +93,14 @@ main() {
   stop_port_forwarding
 
   # 2. Mark this as an intentional disconnect (so PostDown doesn't send alert)
-  touch /tmp/velum-intentional-disconnect 2>/dev/null || true
+  ensure_run_dir
+  touch "$VELUM_RUN_DIR/intentional-disconnect" 2>/dev/null || true
 
   # 3. Stop WireGuard (this triggers PostDown which disables kill switch)
   stop_wireguard
 
   # 4. Clean up the flag
-  rm -f /tmp/velum-intentional-disconnect 2>/dev/null || true
+  rm -f "$VELUM_RUN_DIR/intentional-disconnect" 2>/dev/null || true
 
   # 5. Restore IPv6 (if it was disabled)
   restore_ipv6

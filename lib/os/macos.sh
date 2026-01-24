@@ -144,8 +144,8 @@ os_ipv6_enabled() {
 # DNS MANAGEMENT
 # ============================================================================
 
-# Backup of original DNS servers
-_VELUM_DNS_BACKUP_FILE="/var/tmp/velum_dns_backup"
+# Backup of original DNS servers (uses VELUM_LIB_DIR from velum-core.sh)
+_VELUM_DNS_BACKUP_FILE="$VELUM_LIB_DIR/dns_backup"
 
 # Set DNS servers for all interfaces
 # Usage: os_set_dns "10.0.0.243" "10.0.0.242"
@@ -172,6 +172,9 @@ os_set_dns() {
 
 # Backup current DNS settings
 os_backup_dns() {
+  # Ensure lib directory exists before writing backup (from velum-core.sh)
+  ensure_lib_dir
+
   local service dns_line
 
   : > "$_VELUM_DNS_BACKUP_FILE"

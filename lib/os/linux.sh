@@ -20,9 +20,9 @@ fi
 readonly VELUM_IPTABLES_CHAIN="VELUM_KILLSWITCH"
 readonly VELUM_NFT_TABLE="velum_killswitch"
 
-# DNS backup location
-readonly VELUM_DNS_BACKUP="/var/tmp/velum_dns_backup"
-readonly VELUM_RESOLV_BACKUP="/var/tmp/velum_resolv.conf.backup"
+# DNS backup location (uses VELUM_LIB_DIR from velum-core.sh)
+readonly VELUM_DNS_BACKUP="$VELUM_LIB_DIR/dns_backup"
+readonly VELUM_RESOLV_BACKUP="$VELUM_LIB_DIR/resolv.conf.backup"
 
 # ============================================================================
 # FIREWALL DETECTION
@@ -252,6 +252,9 @@ _set_dns_direct() {
 
 # Backup current DNS settings
 os_backup_dns() {
+  # Ensure lib directory exists before writing backup (from velum-core.sh)
+  ensure_lib_dir
+
   local dns_system
   dns_system=$(_detect_dns_system)
 

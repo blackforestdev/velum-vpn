@@ -124,15 +124,15 @@ cmd_status() {
 cmd_notify() {
   # Check if this is an intentional disconnect (from velum-disconnect)
   # If so, skip the alert - user knows they disconnected
-  if [[ -f /tmp/velum-intentional-disconnect ]]; then
+  if [[ -f "$VELUM_RUN_DIR/intentional-disconnect" ]]; then
     return 0
   fi
 
   # Check if monitor is running - it will handle notifications
   # Avoid duplicate alerts
-  if [[ -f /tmp/velum-monitor.pid ]]; then
+  if [[ -f "$VELUM_RUN_DIR/monitor.pid" ]]; then
     local monitor_pid
-    monitor_pid=$(cat /tmp/velum-monitor.pid 2>/dev/null)
+    monitor_pid=$(cat "$VELUM_RUN_DIR/monitor.pid" 2>/dev/null)
     if [[ -n "$monitor_pid" ]] && ps -p "$monitor_pid" >/dev/null 2>&1; then
       # Monitor is running, let it handle notifications
       return 0

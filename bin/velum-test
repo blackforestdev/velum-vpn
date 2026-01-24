@@ -679,10 +679,10 @@ test_port_forwarding() {
     echo "    Status:     ${GREEN}Active${NC} (PID: $pf_pid)"
     ((TESTS_PASSED++))
 
-    # Try to find the forwarded port
-    if [[ -f /tmp/velum-pf-port ]]; then
+    # Try to find the forwarded port (in secure runtime dir)
+    if [[ -f "$VELUM_RUN_DIR/pf.port" ]]; then
       local pf_port
-      pf_port=$(cat /tmp/velum-pf-port 2>/dev/null)
+      pf_port=$(cat "$VELUM_RUN_DIR/pf.port" 2>/dev/null)
       if [[ -n "$pf_port" ]]; then
         echo "    Port:       ${GREEN}$pf_port${NC}"
       fi
@@ -719,27 +719,10 @@ test_vpn_detection() {
   local services_checked=0
   local detection_details=""
 
-  # Check 1: ip-api.com (has hosting/proxy detection)
-  local ip_api_result
-  ip_api_result=$(curl -s --tlsv1.2 --max-time 5 "http://ip-api.com/json/$public_ip?fields=status,hosting,proxy,isp,org,as" 2>/dev/null)
+  # Note: ip-api.com removed - only supports HTTP (MITM risk)
+  # All remaining checks use HTTPS only
 
-  if [[ -n "$ip_api_result" && "$ip_api_result" == *"status"* ]]; then
-    ((services_checked++))
-    local is_hosting is_proxy
-    is_hosting=$(echo "$ip_api_result" | grep -o '"hosting":[^,}]*' | cut -d: -f2)
-    is_proxy=$(echo "$ip_api_result" | grep -o '"proxy":[^,}]*' | cut -d: -f2)
-
-    if [[ "$is_hosting" == "true" ]]; then
-      ((detection_count++))
-      detection_details="$detection_details datacenter"
-    fi
-    if [[ "$is_proxy" == "true" ]]; then
-      ((detection_count++))
-      detection_details="$detection_details proxy"
-    fi
-  fi
-
-  # Check 2: ipinfo.io privacy detection
+  # Check 1: ipinfo.io privacy detection
   local ipinfo_result
   ipinfo_result=$(curl -s --tlsv1.2 --max-time 5 "https://ipinfo.io/$public_ip/json" 2>/dev/null)
 
@@ -768,7 +751,7 @@ test_vpn_detection() {
     fi
   fi
 
-  # Check 3: Scamalytics (free IP quality check)
+  # Check 2: Scamalytics (free IP quality check)
   local scam_result
   scam_result=$(curl -s --tlsv1.2 --max-time 5 "https://scamalytics.com/ip/$public_ip" 2>/dev/null)
 
@@ -780,7 +763,7 @@ test_vpn_detection() {
     fi
   fi
 
-  # Check 4: iphub.info style check via ipapi.is (free)
+  # Check 3: iphub.info style check via ipapi.is (free)
   local ipapi_is_result
   ipapi_is_result=$(curl -s --tlsv1.2 --max-time 5 "https://api.ipapi.is/?q=$public_ip" 2>/dev/null)
 

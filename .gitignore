@@ -31,8 +31,10 @@ token
 .vscode/
 *.sublime-*
 
-# Runtime files
-/tmp/velum-*
+# Runtime files (created at runtime, not in repo)
+# Linux: /run/velum/
+# macOS: /var/run/velum/
+# Persistent: /var/lib/velum/
 
 # Backup files
 *.bak

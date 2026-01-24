@@ -128,27 +128,8 @@ clean_detection_cache() {
 # DETECTION API CHECKS
 # ============================================================================
 
-# Check ip-api.com for hosting/proxy flags
-# Returns: number of flags (0, 1, or 2)
-_check_ip_api() {
-    local ip="$1"
-    local flags=0
-
-    local response
-    response=$(curl -s --tlsv1.2 --max-time "$DETECTION_API_TIMEOUT" \
-        "http://ip-api.com/json/${ip}?fields=status,hosting,proxy" 2>/dev/null)
-
-    if [[ -n "$response" && "$response" == *"status"* ]]; then
-        local is_hosting is_proxy
-        is_hosting=$(echo "$response" | jq -r '.hosting // false')
-        is_proxy=$(echo "$response" | jq -r '.proxy // false')
-
-        [[ "$is_hosting" == "true" ]] && ((flags++))
-        [[ "$is_proxy" == "true" ]] && ((flags++))
-    fi
-
-    echo "$flags"
-}
+# NOTE: ip-api.com removed - only supports HTTP (MITM risk)
+# All detection checks now use HTTPS only
 
 # Check ipapi.is for VPN/proxy/datacenter flags
 # Returns: number of flags (0, 1, 2, or 3)
@@ -224,16 +205,15 @@ check_detection() {
         return
     fi
 
-    # Run checks (could parallelize but keeping simple for now)
+    # Run checks (HTTPS only - ip-api.com removed for security)
     local total_flags=0
-    local ip_api_flags ipapi_is_flags ipinfo_flags
+    local ipapi_is_flags ipinfo_flags
 
-    # Run API checks
-    ip_api_flags=$(_check_ip_api "$ip")
+    # Run API checks (all HTTPS)
     ipapi_is_flags=$(_check_ipapi_is "$ip")
     ipinfo_flags=$(_check_ipinfo_asn "$ip")
 
-    total_flags=$((ip_api_flags + ipapi_is_flags + ipinfo_flags))
+    total_flags=$((ipapi_is_flags + ipinfo_flags))
 
     # Determine status
     local status

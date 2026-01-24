@@ -74,6 +74,57 @@ VELUM_CACHE_DIR="${HOME}/.cache/velum"
 
 export VELUM_CONFIG_FILE VELUM_TOKENS_DIR VELUM_STATE_DIR VELUM_CACHE_DIR
 
+# ============================================================================
+# RUNTIME PATHS (root-owned, ephemeral)
+# ============================================================================
+
+# OS-specific runtime directory (for pid files, state, logs)
+# macOS uses /var/run, Linux uses /run
+_get_run_dir() {
+  if [[ "$(uname)" == "Darwin" ]]; then
+    echo "/var/run/velum"
+  else
+    echo "/run/velum"
+  fi
+}
+
+VELUM_RUN_DIR="$(_get_run_dir)"
+export VELUM_RUN_DIR
+
+# Ensure runtime directory exists with secure permissions (root-only)
+ensure_run_dir() {
+  if [[ ! -d "$VELUM_RUN_DIR" ]]; then
+    install -d -m 0700 -o root -g "$(id -gn root)" "$VELUM_RUN_DIR" 2>/dev/null || {
+      mkdir -p "$VELUM_RUN_DIR"
+      chmod 700 "$VELUM_RUN_DIR"
+      chown root:root "$VELUM_RUN_DIR" 2>/dev/null || true
+    }
+  fi
+}
+
+# ============================================================================
+# PERSISTENT STATE PATHS (root-owned, survives reboot)
+# ============================================================================
+
+# For DNS backups and other persistent root-owned state
+VELUM_LIB_DIR="/var/lib/velum"
+export VELUM_LIB_DIR
+
+# Ensure lib directory exists with secure permissions (root-only)
+ensure_lib_dir() {
+  if [[ ! -d "$VELUM_LIB_DIR" ]]; then
+    install -d -m 0700 -o root -g "$(id -gn root)" "$VELUM_LIB_DIR" 2>/dev/null || {
+      mkdir -p "$VELUM_LIB_DIR"
+      chmod 700 "$VELUM_LIB_DIR"
+      chown root:root "$VELUM_LIB_DIR" 2>/dev/null || true
+    }
+  fi
+}
+
+# ============================================================================
+# CONFIG DIRECTORY MANAGEMENT
+# ============================================================================
+
 # Ensure config directory exists with proper permissions
 ensure_config_dir() {
   local dir="$1"

@@ -99,22 +99,30 @@ get_browser_name() {
 }
 
 # Open URL in browser (cross-platform)
+# Note: On Linux, if running as root via sudo, we need to run the browser
+# as the original user to avoid X11/Wayland session permission issues.
 open_browser() {
   local url="$1"
 
   if [[ "$VELUM_OS" == "macos" ]]; then
     open "$url"
   else
+    # Linux: if running as root via sudo, run browser as original user
+    local run_cmd=""
+    if [[ $EUID -eq 0 && -n "${SUDO_USER:-}" ]]; then
+      run_cmd="sudo -u $SUDO_USER"
+    fi
+
     # Linux: try xdg-open, then browser-specific
     if command -v xdg-open >/dev/null 2>&1; then
-      xdg-open "$url" 2>/dev/null &
+      $run_cmd xdg-open "$url" 2>/dev/null &
     elif [[ -n "${BROWSER:-}" ]]; then
-      $BROWSER "$url" 2>/dev/null &
+      $run_cmd $BROWSER "$url" 2>/dev/null &
     else
       local browser
       browser=$(detect_default_browser)
       if [[ -n "$browser" ]] && command -v "$browser" >/dev/null 2>&1; then
-        "$browser" "$url" 2>/dev/null &
+        $run_cmd "$browser" "$url" 2>/dev/null &
       else
         print_error "Could not detect browser. Please open manually: $url"
         return 1
@@ -155,8 +163,14 @@ EOF
 # ============================================================================
 
 main() {
+  # On Linux, if running as root via sudo, detect browser as original user
+  # to get the correct user's default browser settings
   local browser
-  browser=$(detect_default_browser)
+  if [[ "$VELUM_OS" != "macos" && $EUID -eq 0 && -n "${SUDO_USER:-}" ]]; then
+    browser=$(sudo -u "$SUDO_USER" bash -c "$(declare -f detect_default_browser); detect_default_browser")
+  else
+    browser=$(detect_default_browser)
+  fi
   local browser_name
   browser_name=$(get_browser_name "$browser")
 

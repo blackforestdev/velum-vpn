@@ -19,8 +19,11 @@ source "$VELUM_ROOT/lib/os/detect.sh"
 # Monitor configuration
 MONITOR_INTERVAL="${VELUM_MONITOR_INTERVAL:-10}"  # Check every 10 seconds
 HANDSHAKE_STALE_THRESHOLD=180  # 3 minutes without handshake = stale
-PID_FILE="/tmp/velum-monitor.pid"
-STATE_FILE="/tmp/velum-monitor.state"
+
+# Runtime paths (VELUM_RUN_DIR from velum-core.sh is OS-specific)
+PID_FILE="$VELUM_RUN_DIR/monitor.pid"
+STATE_FILE="$VELUM_RUN_DIR/monitor.state"
+LOG_FILE="$VELUM_RUN_DIR/monitor.log"
 
 # State tracking
 LAST_VPN_STATE="unknown"
@@ -214,15 +217,18 @@ check_kill_switch() {
 # ============================================================================
 
 monitor_loop() {
+  # Ensure secure runtime directory exists (from velum-core.sh)
+  ensure_run_dir
+
   log_info "VPN monitor started (PID: $$, interval: ${MONITOR_INTERVAL}s)"
 
-  # Save PID (world-readable for status checks)
+  # Save PID (root-only access)
   echo $$ > "$PID_FILE"
-  chmod 644 "$PID_FILE" 2>/dev/null || true
+  chmod 600 "$PID_FILE" 2>/dev/null || true
 
-  # Initialize state (world-readable)
+  # Initialize state (root-only access)
   echo "started=$(date +%s)" > "$STATE_FILE"
-  chmod 644 "$STATE_FILE" 2>/dev/null || true
+  chmod 600 "$STATE_FILE" 2>/dev/null || true
 
   # Notify user that monitoring has started
   notify "VPN Monitor Active" "Background monitoring started. You'll be alerted if VPN drops." "low"
@@ -245,7 +251,7 @@ monitor_loop() {
       ks_active=true
     fi
 
-    # Update state file (world-readable for status checks)
+    # Update state file (root-only, requires sudo for status)
     cat > "$STATE_FILE" << EOF
 started=$(grep "started=" "$STATE_FILE" 2>/dev/null | cut -d= -f2 || echo "$now")
 last_check=$now
@@ -253,7 +259,7 @@ vpn_up=$vpn_up
 ks_active=$ks_active
 handshake_age=$handshake_age
 EOF
-    chmod 644 "$STATE_FILE" 2>/dev/null || true
+    chmod 600 "$STATE_FILE" 2>/dev/null || true
 
     # Alert on VPN state change (with debounce)
     if [[ "$vpn_up" == "true" && "$LAST_VPN_STATE" == "false" ]]; then
@@ -264,7 +270,7 @@ EOF
       fi
     elif [[ "$vpn_up" == "false" && "$LAST_VPN_STATE" == "true" ]]; then
       # Check if this was an intentional disconnect
-      if [[ ! -f "/tmp/velum-intentional-disconnect" ]]; then
+      if [[ ! -f "$VELUM_RUN_DIR/intentional-disconnect" ]]; then
         if [[ $((now - LAST_VPN_ALERT)) -gt "$NOTIFICATION_DEBOUNCE" ]]; then
           notify "VPN Disconnected" "VPN connection lost! Kill switch is blocking traffic." "critical" "Warning: VPN connection lost"
           log_warn "VPN connection lost"
@@ -348,14 +354,17 @@ cmd_start() {
 
   echo "Starting VPN monitor..."
 
+  # Ensure secure runtime directory exists (from velum-core.sh)
+  ensure_run_dir
+
   # Start daemon in background (already running as root)
   # Pass the original user for notifications
-  local log_file="/tmp/velum-monitor.log"
 
-  # Clear old log on fresh start
-  : > "$log_file"
+  # Clear old log on fresh start (root-only access)
+  : > "$LOG_FILE"
+  chmod 600 "$LOG_FILE"
   local orig_user="${SUDO_USER:-$USER}"
-  VELUM_NOTIFY_USER="$orig_user" nohup "$0" daemon >> "$log_file" 2>&1 &
+  VELUM_NOTIFY_USER="$orig_user" nohup "$0" daemon >> "$LOG_FILE" 2>&1 &
   disown 2>/dev/null || true
 
   sleep 1
@@ -392,27 +401,51 @@ cmd_status() {
   echo "========================================"
   echo
 
-  # Check if running (use ps instead of kill -0 to work without root)
+  # Check if running - handle permission issues gracefully
+  if [[ -f "$PID_FILE" ]] && [[ ! -r "$PID_FILE" ]]; then
+    echo "Status:       ${C_YELLOW}Unknown${C_RESET} (run with sudo for details)"
+    echo
+    echo "Hint: Runtime files are root-only for security."
+    echo "      Use: sudo velum monitor status"
+    echo
+    return 0
+  fi
+
   if [[ -f "$PID_FILE" ]]; then
     local pid
     pid=$(cat "$PID_FILE")
     if ps -p "$pid" >/dev/null 2>&1; then
       echo "Status:       ${C_GREEN}Running${C_RESET} (PID: $pid)"
 
-      # Show state info (may need sudo to read state file)
+      # Show state info - parse safely (never source untrusted files)
       if [[ -f "$STATE_FILE" ]] && [[ -r "$STATE_FILE" ]]; then
-        source "$STATE_FILE"
+        local started="" last_check="" vpn_up="" ks_active="" handshake_age=""
+        while IFS='=' read -r key value; do
+          # Only allow known keys, sanitize values (alphanumeric, underscore, dash only)
+          value="${value//[^a-zA-Z0-9_.-]/}"
+          case "$key" in
+            started) started="$value" ;;
+            last_check) last_check="$value" ;;
+            vpn_up) vpn_up="$value" ;;
+            ks_active) ks_active="$value" ;;
+            handshake_age) handshake_age="$value" ;;
+          esac
+        done < "$STATE_FILE"
+
         local now
         now=$(date +%s)
-        local uptime=$((now - started))
-        local uptime_min=$((uptime / 60))
-
-        echo "Uptime:       ${uptime_min} minutes"
-        echo "Last check:   $((now - last_check))s ago"
+        if [[ -n "$started" && "$started" =~ ^[0-9]+$ ]]; then
+          local uptime=$((now - started))
+          local uptime_min=$((uptime / 60))
+          echo "Uptime:       ${uptime_min} minutes"
+        fi
+        if [[ -n "$last_check" && "$last_check" =~ ^[0-9]+$ ]]; then
+          echo "Last check:   $((now - last_check))s ago"
+        fi
         echo
         echo "VPN:          $([ "$vpn_up" == "true" ] && echo "${C_GREEN}Connected${C_RESET}" || echo "${C_RED}Disconnected${C_RESET}")"
         echo "Kill switch:  $([ "$ks_active" == "true" ] && echo "${C_GREEN}Active${C_RESET}" || echo "${C_RED}Inactive${C_RESET}")"
-        if [[ "$vpn_up" == "true" ]]; then
+        if [[ "$vpn_up" == "true" && -n "$handshake_age" ]]; then
           echo "Handshake:    ${handshake_age}s ago"
         fi
       fi
@@ -428,7 +461,7 @@ cmd_status() {
   echo "  velum monitor stop    Stop monitoring"
   echo "  velum monitor status  Show this status"
   echo
-  echo "Logs: /tmp/velum-monitor.log"
+  echo "Logs: $LOG_FILE"
   if [[ "$VELUM_OS" == "macos" ]]; then
     echo "Tip:  Enable Terminal in System Settings → Notifications for desktop alerts"
   fi

@@ -290,7 +290,8 @@ sudo velum connect
 | ~/.config/velum/velum.conf | Read | Configuration |
 | ~/.config/velum/tokens/* | Read/Write | Auth tokens, WG private key |
 | /etc/wireguard/velum.conf | Write | WireGuard configuration |
-| /tmp/velum-pf.pid | Write | Port forwarding daemon PID |
+| $VELUM_RUN_DIR/pf.pid | Write | Port forwarding daemon PID |
+| $VELUM_RUN_DIR/pf.port | Write | Forwarded port number |
 
 **Privileges:** Root required (WireGuard, firewall, DNS)
 
@@ -321,8 +322,8 @@ sudo velum disconnect
 **State Files:**
 | File | Operation |
 |------|-----------|
-| /tmp/velum-pf.pid | Read (kill PF daemon) |
-| /tmp/velum-intentional-disconnect | Create/Delete |
+| $VELUM_RUN_DIR/pf.pid | Read (kill PF daemon) |
+| $VELUM_RUN_DIR/intentional-disconnect | Create/Delete |
 | /etc/wireguard/velum.conf | Read (for wg-quick down) |
 
 **Privileges:** Root required
@@ -455,11 +456,11 @@ Commands:
 **State Files:**
 | File | Content |
 |------|---------|
-| /tmp/velum-monitor.pid | Daemon PID |
-| /tmp/velum-monitor.state | started, vpn_up, ks_active, handshake_age |
-| /tmp/velum-monitor.log | Activity log |
+| $VELUM_RUN_DIR/monitor.pid | Daemon PID |
+| $VELUM_RUN_DIR/monitor.state | started, vpn_up, ks_active, handshake_age |
+| $VELUM_RUN_DIR/monitor.log | Activity log |
 
-**Privileges:** Root required for start (monitors privileged state)
+**Privileges:** Root required for start and status (runtime files are 0600)
 
 **Known Issue:** Desktop notifications currently broken - should use `os_notify()` from lib/os/macos.sh instead of local `notify()` function.
 
@@ -855,7 +856,7 @@ os_date_add_days()        # Date arithmetic
 
 **DNS Management:**
 - Set: `networksetup -setdnsservers`
-- Backup: Parse to `/var/tmp/velum_dns_backup`
+- Backup: Parse to `$VELUM_LIB_DIR/dns_backup` (root-only, 0600)
 - Restore: Per-service from backup file
 - Flush: `dscacheutil -flushcache && killall -HUP mDNSResponder`
 
@@ -1164,13 +1165,22 @@ CONFIG[killswitch_lan]="detect"
 
 ### 8.4 State Files
 
+**Runtime Directory:** `$VELUM_RUN_DIR` (Linux: `/run/velum/`, macOS: `/var/run/velum/`)
+**Persistent Directory:** `$VELUM_LIB_DIR` (`/var/lib/velum/`)
+
+Both directories are root-owned (0700) with files at 0600 for security hardening.
+
 | File | Purpose | Lifetime |
 |------|---------|----------|
 | /etc/wireguard/velum.conf | WireGuard config | Until disconnect |
-| /tmp/velum-pf.pid | Port forwarding PID | Until disconnect |
-| /tmp/velum-monitor.pid | Monitor daemon PID | Until monitor stop |
-| /tmp/velum-monitor.state | Monitor state | Until monitor stop |
-| /tmp/velum-intentional-disconnect | Disconnect flag | Momentary |
+| $VELUM_RUN_DIR/pf.pid | Port forwarding PID | Until disconnect |
+| $VELUM_RUN_DIR/pf.port | Forwarded port number | Until disconnect |
+| $VELUM_RUN_DIR/monitor.pid | Monitor daemon PID | Until monitor stop |
+| $VELUM_RUN_DIR/monitor.state | Monitor state | Until monitor stop |
+| $VELUM_RUN_DIR/monitor.log | Monitor activity log | Until monitor stop |
+| $VELUM_RUN_DIR/intentional-disconnect | Disconnect flag | Momentary |
+| $VELUM_LIB_DIR/dns_backup | DNS settings backup | Until restore |
+| $VELUM_LIB_DIR/resolv.conf.backup | Linux resolv.conf backup | Until restore |
 
 ### 8.5 Cache Files
 

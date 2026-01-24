@@ -69,7 +69,7 @@ sudo velum connect
 sudo velum test
 
 # 4. Check status
-velum status
+sudo velum status
 
 # 5. Disconnect
 sudo velum disconnect
@@ -152,11 +152,11 @@ sudo velum disconnect
 
 ### `velum status`
 
-Shows current VPN connection status without requiring root.
+Shows current VPN connection status.
 
 ```bash
-# Check connection status
-velum status
+# Check connection status (sudo recommended for full details)
+sudo velum status
 ```
 
 **Output includes:**
@@ -165,7 +165,10 @@ velum status
 - Kill switch status
 - IPv6 status
 - DNS configuration
+- Port forwarding status (requires sudo)
 - Authentication token validity
+
+**Note:** Some status details (port forwarding) require sudo due to hardened runtime permissions.
 
 ### `velum test`
 
@@ -200,7 +203,7 @@ sudo velum killswitch enable --vpn-ip <IP> --vpn-port <PORT> --vpn-iface <IFACE>
 sudo velum killswitch disable
 
 # Check status
-velum killswitch status
+sudo velum killswitch status
 ```
 
 ### `velum webrtc`
@@ -227,8 +230,8 @@ Background daemon that monitors VPN health and sends alerts.
 # Start background monitoring
 sudo velum monitor start
 
-# Check monitor status
-velum monitor status
+# Check monitor status (requires sudo - runtime files are root-only)
+sudo velum monitor status
 
 # Stop monitoring
 sudo velum monitor stop
@@ -240,7 +243,9 @@ sudo velum monitor stop
 - Alerts on VPN disconnect, kill switch disabled, stale connection
 - Audio alerts (macOS `say` command) for critical events
 - Desktop notifications (requires Terminal notification permissions on macOS)
-- All events logged to `/tmp/velum-monitor.log`
+- Logs: `/run/velum/monitor.log` (Linux), `/var/run/velum/monitor.log` (macOS)
+
+**Note:** Runtime files are root-owned (0600) for security. Status commands require sudo.
 
 **Alerts sent for:**
 - VPN disconnected (critical - audio alert)
@@ -290,6 +295,8 @@ Authentication tokens are stored in `~/.config/velum/tokens/` with mode 600.
 |----------|-------------|---------|
 | `XDG_CONFIG_HOME` | Base config directory | `~/.config` |
 | `VELUM_LOG_LEVEL` | Log verbosity (0-3) | `1` (INFO) |
+| `VELUM_RUN_DIR` | Runtime directory (pid, state, logs) | `/run/velum` (Linux), `/var/run/velum` (macOS) |
+| `VELUM_LIB_DIR` | Persistent state (DNS backups) | `/var/lib/velum` |
 
 ## Security Features
 

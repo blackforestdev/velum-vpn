@@ -708,6 +708,9 @@ phase_server() {
       [[ -z "$ip" || "$ip" == "null" ]] && continue
 
       # Test latency
+      # TODO: UX improvement - show "(skip)" suffix for servers exceeding threshold
+      #       Currently displays "207ms" even when threshold is 190ms, which is confusing.
+      #       Fix: move echo after threshold check, show "${latency}ms (skip)" if exceeded.
       echo -n "  Testing $name... "
       latency=$(provider_test_latency "$id" 2>/dev/null || echo "9999")
       if [[ "$latency" =~ ^[0-9.]+$ ]]; then
