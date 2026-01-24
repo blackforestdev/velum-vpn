@@ -74,9 +74,8 @@ CONFIG_FILE="$VELUM_CONFIG_FILE"
 load_config() {
   if [[ -f "$CONFIG_FILE" ]]; then
     log_info "Loading existing configuration..."
-    # Source config file (it sets CONFIG array values)
-    # shellcheck source=/dev/null
-    source "$CONFIG_FILE" 2>/dev/null || true
+    # Use safe parser instead of source to prevent code injection
+    safe_load_config "$CONFIG_FILE" 2>/dev/null || true
   fi
 }
 

@@ -14,6 +14,7 @@ export VELUM_ROOT
 
 # Source libraries
 source "$VELUM_ROOT/lib/velum-core.sh"
+source "$VELUM_ROOT/lib/velum-security.sh"
 source "$VELUM_ROOT/lib/os/detect.sh"
 
 # ============================================================================
@@ -49,8 +50,8 @@ declare -A CONFIG
 
 load_test_config() {
   if [[ -f "$CONFIG_FILE" ]]; then
-    # shellcheck source=/dev/null
-    source "$CONFIG_FILE"
+    # Use safe parser instead of source to prevent code injection
+    safe_load_config "$CONFIG_FILE" 2>/dev/null || true
   fi
 }
 

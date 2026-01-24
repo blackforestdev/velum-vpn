@@ -94,6 +94,120 @@ validate_dns() {
   validate_ipv4 "$1"
 }
 
+# Validate killswitch LAN policy
+# Allowed values: "detect", "block", or a valid CIDR (e.g., "192.168.1.0/24")
+# Usage: validate_killswitch_lan "detect" && echo "valid"
+validate_killswitch_lan() {
+  local policy="$1"
+
+  # Allow special keywords
+  case "$policy" in
+    detect|block)
+      return 0
+      ;;
+  esac
+
+  # Otherwise must be a valid CIDR
+  validate_ipv4_cidr "$policy"
+}
+
+# ============================================================================
+# SAFE CONFIG PARSING
+# ============================================================================
+
+# Safely load velum config file without using source
+# Parses CONFIG[key]="value" lines and populates the CONFIG associative array
+# Validates values per-key type and fails on invalid values
+# Usage: safe_load_config "/path/to/velum.conf"
+# Requires: declare -A CONFIG before calling
+safe_load_config() {
+  local config_file="$1"
+
+  if [[ ! -f "$config_file" ]]; then
+    return 1
+  fi
+
+  local line_num=0
+  # Read config file line by line, extracting CONFIG[key]="value" patterns
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    ((line_num++))
+
+    # Skip comments and empty lines
+    [[ "$line" =~ ^[[:space:]]*# ]] && continue
+    [[ -z "${line// /}" ]] && continue
+
+    # Match CONFIG[key]="value" pattern (value cannot contain unescaped quotes)
+    if [[ "$line" =~ ^CONFIG\[([a-zA-Z_][a-zA-Z0-9_]*)\]=\"([^\"]*)\"$ ]]; then
+      local key="${BASH_REMATCH[1]}"
+      local value="${BASH_REMATCH[2]}"
+
+      # Validate value based on key type
+      case "$key" in
+        # Boolean keys: must be "true" or "false"
+        killswitch|ipv6_disabled|use_provider_dns|port_forward|dip_enabled|server_auto|allow_geo)
+          if [[ "$value" != "true" && "$value" != "false" ]]; then
+            log_error "Invalid boolean value for $key: '$value' (line $line_num)"
+            return 1
+          fi
+          ;;
+        # LAN policy: detect, block, or CIDR
+        killswitch_lan)
+          if ! validate_killswitch_lan "$value"; then
+            log_error "Invalid killswitch_lan value: '$value' (line $line_num)"
+            return 1
+          fi
+          ;;
+        # Provider: must be alphanumeric/underscore only
+        provider)
+          if [[ ! "$value" =~ ^[a-zA-Z_][a-zA-Z0-9_]*$ ]]; then
+            log_error "Invalid provider value: '$value' (line $line_num)"
+            return 1
+          fi
+          ;;
+        # IP addresses
+        selected_ip)
+          if [[ -n "$value" ]] && ! validate_ipv4 "$value"; then
+            log_error "Invalid IP address for $key: '$value' (line $line_num)"
+            return 1
+          fi
+          ;;
+        # Numeric values (latency threshold)
+        max_latency)
+          if [[ -n "$value" ]] && ! [[ "$value" =~ ^[0-9]+\.?[0-9]*$ ]]; then
+            log_error "Invalid numeric value for $key: '$value' (line $line_num)"
+            return 1
+          fi
+          ;;
+        # Tokens (dip_token, etc): allow base64 charset (alphanumeric, +, /, =)
+        dip_token|*_token)
+          if [[ -n "$value" ]] && ! [[ "$value" =~ ^[A-Za-z0-9+/=_-]+$ ]]; then
+            log_error "Invalid token format for $key (line $line_num)"
+            return 1
+          fi
+          ;;
+        # String values (region, hostname): alphanumeric, dots, hyphens, underscores
+        selected_region|selected_hostname)
+          if [[ -n "$value" ]] && ! [[ "$value" =~ ^[A-Za-z0-9._-]+$ ]]; then
+            log_error "Invalid string value for $key: '$value' (line $line_num)"
+            return 1
+          fi
+          ;;
+        # Default: allow safe characters (no shell metacharacters)
+        *)
+          if [[ "$value" =~ [\'\"\`\$\(\)\;\&\|\<\>\!] ]]; then
+            log_error "Invalid characters in $key value (line $line_num)"
+            return 1
+          fi
+          ;;
+      esac
+
+      CONFIG["$key"]="$value"
+    fi
+  done < "$config_file"
+
+  return 0
+}
+
 # ============================================================================
 # API RESPONSE VALIDATION
 # ============================================================================

@@ -36,20 +36,32 @@ CONFIG_FILE="$VELUM_CONFIG_FILE"
 # Configuration array
 declare -A CONFIG
 
-# Load configuration
+# Load configuration safely (no source - prevents code injection)
 load_config() {
   if [[ ! -f "$CONFIG_FILE" ]]; then
     print_error "No configuration found. Run velum-config first."
     exit 1
   fi
 
-  # shellcheck source=/dev/null
-  source "$CONFIG_FILE"
+  # Use safe parser instead of source to prevent code injection
+  if ! safe_load_config "$CONFIG_FILE"; then
+    print_error "Failed to parse configuration file."
+    exit 1
+  fi
 
   # Validate required settings
   if [[ -z "${CONFIG[provider]:-}" ]]; then
     print_error "Invalid configuration. Run velum-config again."
     exit 1
+  fi
+
+  # Validate killswitch_lan if set (prevents shell injection in PostUp)
+  if [[ -n "${CONFIG[killswitch_lan]:-}" ]]; then
+    if ! validate_killswitch_lan "${CONFIG[killswitch_lan]}"; then
+      print_error "Invalid killswitch_lan value: ${CONFIG[killswitch_lan]}"
+      print_error "Must be 'detect', 'block', or a valid CIDR (e.g., 192.168.1.0/24)"
+      exit 1
+    fi
   fi
 }
 
@@ -476,6 +488,25 @@ main() {
     dns_server=$(echo "$wg_response" | jq -r '.dns_servers[0]')
   else
     dns_server=""
+  fi
+
+  # Validate API response fields before using in WireGuard config
+  # This prevents newline injection and other attacks from compromised API responses
+  if ! validate_ipv4_cidr "$peer_ip"; then
+    print_error "Invalid peer_ip from API: $peer_ip"
+    exit 1
+  fi
+  if ! validate_wg_key "$server_key"; then
+    print_error "Invalid server_key from API"
+    exit 1
+  fi
+  if ! validate_port "$server_port"; then
+    print_error "Invalid server_port from API: $server_port"
+    exit 1
+  fi
+  if [[ -n "$dns_server" ]] && ! validate_ipv4 "$dns_server"; then
+    print_error "Invalid DNS server from API: $dns_server"
+    exit 1
   fi
 
   # Create WireGuard config
