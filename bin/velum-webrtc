@@ -159,10 +159,64 @@ EOF
 }
 
 # ============================================================================
+# HELP
+# ============================================================================
+
+show_help() {
+  cat << 'EOF'
+velum-webrtc - WebRTC leak test via browser
+
+USAGE
+    velum webrtc
+
+DESCRIPTION
+    Opens your browser to a WebRTC leak test page. WebRTC can expose your
+    real IP address even when using a VPN through STUN server queries.
+
+    This command:
+    1. Detects your default browser
+    2. Shows your current VPN IP for reference
+    3. Opens browserleaks.com/webrtc for testing
+    4. Provides guidance on disabling WebRTC if needed
+
+WHAT TO CHECK
+    1. Public IP Address - Should show your VPN IP, not real IP
+    2. Local IP Address  - May show private IPs (less critical)
+    3. IPv6 Address      - Should be empty or show VPN IPv6
+
+DISABLING WEBRTC
+    Firefox:     about:config -> media.peerconnection.enabled = false
+    Chrome/Brave: Install "WebRTC Leak Prevent" extension
+    Safari:      WebRTC disabled by default in private mode
+
+OPTIONS
+    -h, --help    Show this help message
+
+NOTE
+    The velum test command includes automated WebRTC risk assessment
+    without requiring a browser.
+
+EXAMPLES
+    velum webrtc         # Open browser for manual test
+
+SEE ALSO
+    velum test    # Automated leak testing (includes WebRTC check)
+EOF
+}
+
+# ============================================================================
 # MAIN
 # ============================================================================
 
 main() {
+  # Handle help flag
+  case "${1:-}" in
+    -h|--help)
+      show_help
+      exit 0
+      ;;
+  esac
+
   # On Linux, if running as root via sudo, detect browser as original user
   # to get the correct user's default browser settings
   local browser

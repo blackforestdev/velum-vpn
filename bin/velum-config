@@ -854,10 +854,72 @@ phase_summary() {
 }
 
 # ============================================================================
+# SUBCOMMANDS
+# ============================================================================
+
+# Lint subcommand: validate config file
+cmd_lint() {
+  echo
+  echo "${C_BOLD}velum-vpn Config Lint${C_RESET}"
+  echo "====================="
+  echo
+  echo "Checking: $CONFIG_FILE"
+  echo
+
+  if [[ ! -f "$CONFIG_FILE" ]]; then
+    print_error "Config file not found: $CONFIG_FILE"
+    echo "Run 'velum config' to create a configuration."
+    exit 1
+  fi
+
+  # Run lint mode (strict + known-keys-only, collects all errors)
+  local result
+  safe_load_config "$CONFIG_FILE" --lint
+  result=$?
+
+  # Exit codes: 0 = OK, 1 = errors, 2 = warnings
+  exit $result
+}
+
+# Show usage
+show_usage() {
+  cat << 'EOF'
+Usage: velum config [subcommand]
+
+Subcommands:
+  (none)    Run interactive configuration wizard
+  lint      Validate existing configuration file
+
+Examples:
+  velum config         # Interactive wizard
+  velum config lint    # Validate config file
+EOF
+}
+
+# ============================================================================
 # MAIN
 # ============================================================================
 
 main() {
+  # Handle subcommands
+  case "${1:-}" in
+    lint)
+      cmd_lint
+      ;;
+    -h|--help)
+      show_usage
+      exit 0
+      ;;
+    "")
+      # No subcommand - run interactive wizard
+      ;;
+    *)
+      print_error "Unknown subcommand: $1"
+      show_usage
+      exit 1
+      ;;
+  esac
+
   echo
   echo "${C_BOLD}velum-vpn Configuration${C_RESET}"
   echo "========================"

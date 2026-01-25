@@ -229,10 +229,60 @@ show_status() {
 }
 
 # ============================================================================
+# HELP
+# ============================================================================
+
+show_help() {
+  cat << 'EOF'
+velum-status - Show VPN connection status
+
+USAGE
+    velum status          # Basic status (some details require sudo)
+    sudo velum status     # Full status with all details
+
+DESCRIPTION
+    Displays current VPN connection status including:
+    - Connection state (connected/disconnected)
+    - Provider and VPN interface
+    - Public IP address
+    - WireGuard transfer statistics
+    - Kill switch status (requires sudo)
+    - IPv6 status
+    - DNS configuration
+    - Port forwarding status (requires sudo)
+    - Authentication token validity
+
+OPTIONS
+    -h, --help    Show this help message
+
+NOTE
+    Some status details (kill switch, port forwarding) require sudo
+    due to hardened runtime file permissions.
+
+EXAMPLES
+    velum status          # Quick status check
+    sudo velum status     # Full status with security details
+
+SEE ALSO
+    velum test        # Comprehensive leak testing
+    velum connect     # Connect to VPN
+    velum disconnect  # Disconnect from VPN
+EOF
+}
+
+# ============================================================================
 # MAIN
 # ============================================================================
 
 main() {
+  # Handle help flag
+  case "${1:-}" in
+    -h|--help)
+      show_help
+      exit 0
+      ;;
+  esac
+
   load_status_config
   show_status
 }

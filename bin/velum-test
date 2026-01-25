@@ -854,10 +854,62 @@ test_reconnection() {
 }
 
 # ============================================================================
+# HELP
+# ============================================================================
+
+show_help() {
+  cat << 'EOF'
+velum-test - Comprehensive VPN connection validator
+
+USAGE
+    sudo velum test
+
+DESCRIPTION
+    Tests the VPN connection for leaks and issues. Run this after connecting
+    to verify your connection is secure.
+
+TEST CATEGORIES
+    1.  WireGuard Interface   - Handshake, transfer stats, allowed IPs
+    2.  Public IP Check       - Verifies IP is from VPN provider
+    3.  DNS Leak Test         - Tests primary DNS and Quad9 fallback
+    4.  Route Table Check     - Verifies traffic routes through VPN
+    5.  Traffic Test          - Ping, HTTPS, MTU tests
+    6.  Kill Switch           - Verifies firewall rules are active
+    7.  Leak Sources          - IPv6, remote access, WebRTC assessment
+    8.  Port Forwarding       - Status if enabled
+    9.  VPN Detection Check   - Tests if IP is flagged by services
+    10. Reconnection Info     - Config age, quick reconnect command
+
+OPTIONS
+    -h, --help    Show this help message
+
+EXIT CODES
+    0    All tests passed
+    1    One or more tests failed
+
+EXAMPLES
+    sudo velum test    # Run all connection tests
+
+SEE ALSO
+    velum status     # Quick status check
+    velum webrtc     # Browser-based WebRTC test
+    velum connect    # Connect to VPN
+EOF
+}
+
+# ============================================================================
 # MAIN
 # ============================================================================
 
 main() {
+  # Handle help flag
+  case "${1:-}" in
+    -h|--help)
+      show_help
+      exit 0
+      ;;
+  esac
+
   echo ""
   echo "${BLUE}=================================================================${NC}"
   echo "${BLUE}               velum VPN Connection Validator                    ${NC}"

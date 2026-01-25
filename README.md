@@ -114,7 +114,19 @@ Configuration is saved to `~/.config/velum/velum.conf`.
 ```bash
 # Run configuration wizard
 velum config
+
+# Validate existing configuration
+velum config lint
 ```
+
+**Subcommands:**
+- `velum config` - Interactive configuration wizard
+- `velum config lint` - Validate config file (checks for errors, unknown keys, invalid values)
+
+**Exit codes for lint:**
+- `0` - Configuration is valid
+- `1` - Errors found (invalid values, malformed lines)
+- `2` - Warnings only (unknown keys)
 
 ### `velum connect`
 

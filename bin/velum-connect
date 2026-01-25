@@ -413,10 +413,62 @@ show_connection_info() {
 }
 
 # ============================================================================
+# HELP
+# ============================================================================
+
+show_help() {
+  cat << 'EOF'
+velum-connect - Connect to VPN
+
+USAGE
+    sudo velum connect
+
+DESCRIPTION
+    Establishes a VPN connection using the saved configuration from velum config.
+
+    This command:
+    1. Loads configuration from ~/.config/velum/velum.conf
+    2. Finds best server by latency (if auto mode)
+    3. Generates/loads WireGuard keypair
+    4. Exchanges keys with provider API
+    5. Creates WireGuard configuration
+    6. Enables kill switch (if configured)
+    7. Starts WireGuard interface
+    8. Sets up port forwarding (if enabled)
+    9. Starts background health monitor
+
+REQUIREMENTS
+    - Root privileges (sudo)
+    - Valid configuration (run velum config first)
+    - Valid authentication token
+
+OPTIONS
+    -h, --help    Show this help message
+
+EXAMPLES
+    sudo velum connect    # Connect using saved configuration
+
+SEE ALSO
+    velum config          # Configure VPN settings
+    velum disconnect      # Disconnect from VPN
+    velum status          # Check connection status
+    velum test            # Test for leaks
+EOF
+}
+
+# ============================================================================
 # MAIN
 # ============================================================================
 
 main() {
+  # Handle help flag
+  case "${1:-}" in
+    -h|--help)
+      show_help
+      exit 0
+      ;;
+  esac
+
   echo
   echo "${C_BOLD}velum-connect${C_RESET}"
   echo "============="

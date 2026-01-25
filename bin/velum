@@ -23,31 +23,57 @@ usage() {
   cat << EOF
 velum-vpn v${VELUM_VERSION} - Security-focused VPN management
 
-Usage: velum <command> [options]
+A provider-agnostic VPN management suite for WireGuard with defense-in-depth
+security features including kill switch, IPv6 leak prevention, and DNS protection.
 
-Commands:
-  config      Configure VPN settings interactively
-  connect     Connect to VPN
-  disconnect  Disconnect from VPN
-  status      Show connection status
-  test        Test VPN connection for leaks
-  killswitch  Manage kill switch
-  webrtc      Open browser for WebRTC leak test
-  monitor     VPN health monitoring daemon
+USAGE
+    velum <command> [options]
 
-Options:
-  -h, --help     Show this help
-  -v, --version  Show version
+COMMANDS
+    config          Configure VPN settings interactively
+    config lint     Validate configuration file for errors
+    connect         Connect to VPN (requires sudo)
+    disconnect      Disconnect from VPN (requires sudo)
+    status          Show connection status (sudo for full details)
+    test            Comprehensive leak and connection testing (requires sudo)
+    killswitch      Manage kill switch independently
+    webrtc          Open browser for WebRTC leak test
+    monitor         VPN health monitoring daemon
 
-Examples:
-  velum config              # Configure VPN settings
-  sudo velum connect        # Connect to VPN
-  sudo velum disconnect     # Disconnect from VPN
-  velum status              # Check connection status
-  sudo velum test           # Test connection for leaks
+OPTIONS
+    -h, --help      Show this help message
+    -v, --version   Show version information
 
-For command-specific help:
-  velum <command> --help
+QUICK START
+    1. velum config           # Configure VPN (interactive wizard)
+    2. sudo velum connect     # Connect to VPN
+    3. sudo velum test        # Verify no leaks
+    4. sudo velum status      # Check connection status
+    5. sudo velum disconnect  # Disconnect when done
+
+SECURITY FEATURES
+    - Kill switch: Blocks all traffic if VPN drops
+    - IPv6 protection: Disabled at interface and firewall level
+    - DNS leak protection: Routes DNS through VPN tunnel
+    - Encrypted fallback: Quad9 (9.9.9.9) as secondary DNS
+
+SUPPORTED PROVIDERS
+    - PIA (Private Internet Access) - Port forwarding, Dedicated IP
+    - Mullvad - Privacy-focused, no account info required
+    - IVPN - Privacy-focused, open source, audited
+
+CONFIGURATION
+    Config file:    ~/.config/velum/velum.conf
+    Tokens:         ~/.config/velum/tokens/
+    Runtime (Linux): /run/velum/
+    Runtime (macOS): /var/run/velum/
+
+COMMAND HELP
+    velum <command> --help    # Get help for specific command
+
+MORE INFO
+    Documentation:  https://github.com/blackforestdev/velum-vpn
+    Report issues:  https://github.com/blackforestdev/velum-vpn/issues
 
 EOF
 }

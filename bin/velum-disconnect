@@ -70,10 +70,51 @@ restore_dns() {
 }
 
 # ============================================================================
+# HELP
+# ============================================================================
+
+show_help() {
+  cat << 'EOF'
+velum-disconnect - Disconnect from VPN
+
+USAGE
+    sudo velum disconnect
+
+DESCRIPTION
+    Cleanly disconnects from the VPN and removes all firewall rules.
+
+    This command:
+    1. Stops background health monitor
+    2. Stops port forwarding keepalive
+    3. Brings down WireGuard interface
+    4. Disables kill switch firewall rules
+    5. Optionally re-enables IPv6
+
+OPTIONS
+    -h, --help    Show this help message
+
+EXAMPLES
+    sudo velum disconnect    # Disconnect from VPN
+
+SEE ALSO
+    velum connect    # Connect to VPN
+    velum status     # Check connection status
+EOF
+}
+
+# ============================================================================
 # MAIN
 # ============================================================================
 
 main() {
+  # Handle help flag
+  case "${1:-}" in
+    -h|--help)
+      show_help
+      exit 0
+      ;;
+  esac
+
   echo
   echo "${C_BOLD}velum-disconnect${C_RESET}"
   echo "================"

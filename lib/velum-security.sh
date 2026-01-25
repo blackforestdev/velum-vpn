@@ -115,22 +115,81 @@ validate_killswitch_lan() {
 # SAFE CONFIG PARSING
 # ============================================================================
 
+# Known valid config keys (keep in sync with velum-config save_config)
+readonly VELUM_KNOWN_CONFIG_KEYS=(
+  "provider"
+  "killswitch"
+  "killswitch_lan"
+  "ipv6_disabled"
+  "use_provider_dns"
+  "dip_enabled"
+  "dip_token"
+  "port_forward"
+  "allow_geo"
+  "server_auto"
+  "max_latency"
+  "selected_region"
+  "selected_ip"
+  "selected_hostname"
+)
+
+# Check if a key is in the known keys list
+_is_known_key() {
+  local key="$1"
+  local k
+  for k in "${VELUM_KNOWN_CONFIG_KEYS[@]}"; do
+    [[ "$k" == "$key" ]] && return 0
+  done
+  return 1
+}
+
 # Safely load velum config file without using source
 # Parses CONFIG[key]="value" lines and populates the CONFIG associative array
 # Validates values per-key type and fails on invalid values
-# Usage: safe_load_config "/path/to/velum.conf"
-# Requires: declare -A CONFIG before calling
+#
+# Usage: safe_load_config "/path/to/velum.conf" [options]
+# Options:
+#   --strict          Error on lines that don't match CONFIG[key]="value"
+#   --known-keys-only Error on unknown keys not in VELUM_KNOWN_CONFIG_KEYS
+#   --lint            Lint mode: collect all errors/warnings, don't populate CONFIG
+#
+# Returns: 0 = OK, 1 = errors, 2 = warnings only (lint mode)
+# Requires: declare -A CONFIG before calling (except in lint mode)
 safe_load_config() {
-  local config_file="$1"
+  local config_file=""
+  local strict=false
+  local known_keys_only=false
+  local lint_mode=false
+
+  # Parse arguments
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --strict) strict=true ;;
+      --known-keys-only) known_keys_only=true ;;
+      --lint) lint_mode=true; strict=true; known_keys_only=true ;;
+      -*) log_error "Unknown option: $1"; return 1 ;;
+      *) config_file="$1" ;;
+    esac
+    shift
+  done
+
+  if [[ -z "$config_file" ]]; then
+    log_error "No config file specified"
+    return 1
+  fi
 
   if [[ ! -f "$config_file" ]]; then
+    [[ "$lint_mode" == true ]] && echo "ERROR: Config file not found: $config_file"
     return 1
   fi
 
   local line_num=0
+  local errors=0
+  local warnings=0
+
   # Read config file line by line, extracting CONFIG[key]="value" patterns
   while IFS= read -r line || [[ -n "$line" ]]; do
-    ((line_num++))
+    ((++line_num))  # Use prefix increment to avoid exit code 1 when line_num=0
 
     # Skip comments and empty lines
     [[ "$line" =~ ^[[:space:]]*# ]] && continue
@@ -141,69 +200,109 @@ safe_load_config() {
       local key="${BASH_REMATCH[1]}"
       local value="${BASH_REMATCH[2]}"
 
+      # Check if key is known (when strict)
+      if [[ "$known_keys_only" == true ]] && ! _is_known_key "$key"; then
+        if [[ "$lint_mode" == true ]]; then
+          echo "WARNING: Unknown config key '$key' (line $line_num)"
+          ((warnings++))
+        else
+          log_warn "Unknown config key '$key' (line $line_num)"
+        fi
+        # Continue processing - unknown keys are warnings, not errors
+      fi
+
       # Validate value based on key type
+      local validation_error=""
       case "$key" in
         # Boolean keys: must be "true" or "false"
         killswitch|ipv6_disabled|use_provider_dns|port_forward|dip_enabled|server_auto|allow_geo)
           if [[ "$value" != "true" && "$value" != "false" ]]; then
-            log_error "Invalid boolean value for $key: '$value' (line $line_num)"
-            return 1
+            validation_error="Invalid boolean value for $key: '$value'"
           fi
           ;;
         # LAN policy: detect, block, or CIDR
         killswitch_lan)
           if ! validate_killswitch_lan "$value"; then
-            log_error "Invalid killswitch_lan value: '$value' (line $line_num)"
-            return 1
+            validation_error="Invalid killswitch_lan value: '$value' (must be detect, block, or CIDR)"
           fi
           ;;
         # Provider: must be alphanumeric/underscore only
         provider)
           if [[ ! "$value" =~ ^[a-zA-Z_][a-zA-Z0-9_]*$ ]]; then
-            log_error "Invalid provider value: '$value' (line $line_num)"
-            return 1
+            validation_error="Invalid provider value: '$value'"
           fi
           ;;
         # IP addresses
         selected_ip)
           if [[ -n "$value" ]] && ! validate_ipv4 "$value"; then
-            log_error "Invalid IP address for $key: '$value' (line $line_num)"
-            return 1
+            validation_error="Invalid IP address for $key: '$value'"
           fi
           ;;
         # Numeric values (latency threshold)
         max_latency)
           if [[ -n "$value" ]] && ! [[ "$value" =~ ^[0-9]+\.?[0-9]*$ ]]; then
-            log_error "Invalid numeric value for $key: '$value' (line $line_num)"
-            return 1
+            validation_error="Invalid numeric value for $key: '$value'"
           fi
           ;;
         # Tokens (dip_token, etc): allow base64 charset (alphanumeric, +, /, =)
         dip_token|*_token)
           if [[ -n "$value" ]] && ! [[ "$value" =~ ^[A-Za-z0-9+/=_-]+$ ]]; then
-            log_error "Invalid token format for $key (line $line_num)"
-            return 1
+            validation_error="Invalid token format for $key"
           fi
           ;;
         # String values (region, hostname): alphanumeric, dots, hyphens, underscores
         selected_region|selected_hostname)
           if [[ -n "$value" ]] && ! [[ "$value" =~ ^[A-Za-z0-9._-]+$ ]]; then
-            log_error "Invalid string value for $key: '$value' (line $line_num)"
-            return 1
+            validation_error="Invalid string value for $key: '$value'"
           fi
           ;;
         # Default: allow safe characters (no shell metacharacters)
         *)
           if [[ "$value" =~ [\'\"\`\$\(\)\;\&\|\<\>\!] ]]; then
-            log_error "Invalid characters in $key value (line $line_num)"
-            return 1
+            validation_error="Invalid characters in $key value (shell metacharacters not allowed)"
           fi
           ;;
       esac
 
-      CONFIG["$key"]="$value"
+      if [[ -n "$validation_error" ]]; then
+        if [[ "$lint_mode" == true ]]; then
+          echo "ERROR: $validation_error (line $line_num)"
+          ((errors++))
+        else
+          log_error "$validation_error (line $line_num)"
+          return 1
+        fi
+      elif [[ "$lint_mode" != true ]]; then
+        CONFIG["$key"]="$value"
+      fi
+    else
+      # Line doesn't match CONFIG pattern
+      if [[ "$strict" == true ]]; then
+        if [[ "$lint_mode" == true ]]; then
+          echo "ERROR: Unrecognized line format (line $line_num): $line"
+          ((errors++))
+        else
+          log_error "Unrecognized line format (line $line_num): $line"
+          return 1
+        fi
+      fi
     fi
   done < "$config_file"
+
+  # Lint mode summary
+  if [[ "$lint_mode" == true ]]; then
+    echo ""
+    if [[ $errors -gt 0 ]]; then
+      echo "Lint result: $errors error(s), $warnings warning(s)"
+      return 1
+    elif [[ $warnings -gt 0 ]]; then
+      echo "Lint result: $warnings warning(s)"
+      return 2
+    else
+      echo "Lint result: OK"
+      return 0
+    fi
+  fi
 
   return 0
 }
