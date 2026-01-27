@@ -22,13 +22,16 @@ _init_jurisdiction_data() {
     # 5-Eyes (UKUSA Agreement - 1946)
     COUNTRY_ALLIANCE["US"]="5-Eyes"
     COUNTRY_ALLIANCE["USA"]="5-Eyes"
+    COUNTRY_ALLIANCE["United States"]="5-Eyes"
     COUNTRY_ALLIANCE["GB"]="5-Eyes"
     COUNTRY_ALLIANCE["UK"]="5-Eyes"
+    COUNTRY_ALLIANCE["United Kingdom"]="5-Eyes"
     COUNTRY_ALLIANCE["CA"]="5-Eyes"
     COUNTRY_ALLIANCE["Canada"]="5-Eyes"
     COUNTRY_ALLIANCE["AU"]="5-Eyes"
     COUNTRY_ALLIANCE["Australia"]="5-Eyes"
     COUNTRY_ALLIANCE["NZ"]="5-Eyes"
+    COUNTRY_ALLIANCE["New Zealand"]="5-Eyes"
 
     # 9-Eyes (5-Eyes + 4)
     COUNTRY_ALLIANCE["DK"]="9-Eyes"
@@ -288,10 +291,14 @@ _init_jurisdiction_data() {
     # 1 - Weak: Known for compliance, mandatory backdoors, mass surveillance
     COUNTRY_PRIVACY["US"]="1"
     COUNTRY_PRIVACY["USA"]="1"
+    COUNTRY_PRIVACY["United States"]="1"
     COUNTRY_PRIVACY["GB"]="1"
     COUNTRY_PRIVACY["UK"]="1"
+    COUNTRY_PRIVACY["United Kingdom"]="1"
     COUNTRY_PRIVACY["AU"]="1"
     COUNTRY_PRIVACY["Australia"]="1"
+    COUNTRY_PRIVACY["NZ"]="2"
+    COUNTRY_PRIVACY["New Zealand"]="2"
 }
 
 # Initialize on source
@@ -332,8 +339,16 @@ privacy_to_text() {
 # ============================================================================
 
 # Get alliance for a country (by code or name)
+# Returns: "5-Eyes", "9-Eyes", "14-Eyes", "Blind", or "Unknown"
 get_alliance() {
     local country="$1"
+
+    # Empty or null country is explicitly unknown
+    if [[ -z "$country" || "$country" == "null" ]]; then
+        echo "Unknown"
+        return
+    fi
+
     local alliance="${COUNTRY_ALLIANCE[$country]:-}"
 
     # If not found, try uppercase
@@ -341,13 +356,21 @@ get_alliance() {
         alliance="${COUNTRY_ALLIANCE[${country^^}]:-}"
     fi
 
-    # Default to Blind if unknown (conservative assumption)
-    echo "${alliance:-Blind}"
+    # Unknown country = Unknown alliance (conservative - don't assume safe)
+    echo "${alliance:-Unknown}"
 }
 
 # Get privacy rating for a country (by code or name)
+# Returns: 1-5 rating, or 2 (Fair) for unknown countries (conservative)
 get_privacy() {
     local country="$1"
+
+    # Empty or null country gets conservative rating
+    if [[ -z "$country" || "$country" == "null" ]]; then
+        echo "2"
+        return
+    fi
+
     local privacy="${COUNTRY_PRIVACY[$country]:-}"
 
     # If not found, try uppercase
@@ -355,8 +378,8 @@ get_privacy() {
         privacy="${COUNTRY_PRIVACY[${country^^}]:-}"
     fi
 
-    # Default to 3 (Moderate) if unknown
-    echo "${privacy:-3}"
+    # Default to 2 (Fair) if unknown - conservative, don't assume safe
+    echo "${privacy:-2}"
 }
 
 # Get full jurisdiction info for a country
@@ -445,16 +468,307 @@ recommendation_to_stars() {
 }
 
 # ============================================================================
+# HOSTING PROVIDER JURISDICTION
+# ============================================================================
+# Maps VPN hosting providers to their corporate jurisdiction (AS registration)
+# This is critical: a "Brazil" server hosted by a US company may route through US
+
+declare -A PROVIDER_JURISDICTION
+
+_init_provider_jurisdiction() {
+    # All keys are lowercase for consistent matching
+    # Input should be normalized to lowercase before lookup
+
+    # US-based providers (5-Eyes jurisdiction)
+    PROVIDER_JURISDICTION["zenlayer"]="US"
+    PROVIDER_JURISDICTION["leaseweb"]="US"      # US/NL but AS in US
+    PROVIDER_JURISDICTION["leaseweb us"]="US"
+    PROVIDER_JURISDICTION["quadranet"]="US"
+    PROVIDER_JURISDICTION["colocrossing"]="US"
+    PROVIDER_JURISDICTION["psychz"]="US"
+    PROVIDER_JURISDICTION["serverhub"]="US"
+    PROVIDER_JURISDICTION["enzu"]="US"
+    PROVIDER_JURISDICTION["sharktech"]="US"
+    PROVIDER_JURISDICTION["linode"]="US"
+    PROVIDER_JURISDICTION["digitalocean"]="US"
+    PROVIDER_JURISDICTION["vultr"]="US"
+    PROVIDER_JURISDICTION["aws"]="US"
+    PROVIDER_JURISDICTION["amazon"]="US"
+    PROVIDER_JURISDICTION["google"]="US"
+    PROVIDER_JURISDICTION["gcp"]="US"
+    PROVIDER_JURISDICTION["microsoft"]="US"
+    PROVIDER_JURISDICTION["azure"]="US"
+    PROVIDER_JURISDICTION["cloudflare"]="US"
+    PROVIDER_JURISDICTION["akamai"]="US"
+
+    # UK-based providers (5-Eyes jurisdiction)
+    PROVIDER_JURISDICTION["datapacket"]="GB"
+    PROVIDER_JURISDICTION["m247"]="GB"
+    PROVIDER_JURISDICTION["iomart"]="GB"
+    PROVIDER_JURISDICTION["rapidswitch"]="GB"
+    PROVIDER_JURISDICTION["uk2"]="GB"
+
+    # Canada-based providers (5-Eyes jurisdiction)
+    PROVIDER_JURISDICTION["ovh"]="CA"           # French but many AS via CA
+    PROVIDER_JURISDICTION["ovh ca"]="CA"
+    PROVIDER_JURISDICTION["techfutures"]="CA"   # Tech Futures Interactive, BC Canada
+
+    # Australia-based providers (5-Eyes jurisdiction)
+    PROVIDER_JURISDICTION["vocus"]="AU"
+    PROVIDER_JURISDICTION["aussie broadband"]="AU"
+
+    # Netherlands-based (9-Eyes but privacy-friendly)
+    PROVIDER_JURISDICTION["worldstream"]="NL"
+    PROVIDER_JURISDICTION["nforce"]="NL"
+    PROVIDER_JURISDICTION["leaseweb nl"]="NL"
+    PROVIDER_JURISDICTION["i3d"]="NL"
+    PROVIDER_JURISDICTION["serverius"]="NL"
+
+    # Germany-based (14-Eyes)
+    PROVIDER_JURISDICTION["hetzner"]="DE"
+    PROVIDER_JURISDICTION["contabo"]="DE"
+    PROVIDER_JURISDICTION["netcup"]="DE"
+
+    # Sweden-based (14-Eyes but Mullvad HQ)
+    PROVIDER_JURISDICTION["31173"]="SE"         # Mullvad's own AS
+    PROVIDER_JURISDICTION["31173 services ab"]="SE"
+    PROVIDER_JURISDICTION["mullvad"]="SE"
+
+    # Privacy-friendly jurisdictions
+    PROVIDER_JURISDICTION["creanova"]="FI"
+    PROVIDER_JURISDICTION["hostroyale"]="IN"    # India-based
+    PROVIDER_JURISDICTION["xtom"]="HK"
+    PROVIDER_JURISDICTION["tzulo"]="RO"
+    PROVIDER_JURISDICTION["flokinet"]="IS"
+    PROVIDER_JURISDICTION["1984"]="IS"          # 1984 Hosting, Iceland
+    PROVIDER_JURISDICTION["bahnhof"]="SE"       # Swedish, privacy-focused
+
+    # Singapore (Blind but surveillance concerns)
+    PROVIDER_JURISDICTION["singtel"]="SG"
+    PROVIDER_JURISDICTION["telin"]="SG"
+}
+
+# Initialize provider data
+_init_provider_jurisdiction
+
+# Get jurisdiction for a hosting provider
+# Returns: country code (US, GB, etc.) or "unknown"
+# Note: Input should already be lowercase; this function normalizes just in case
+get_provider_jurisdiction() {
+    local provider="$1"
+
+    # Handle empty input
+    if [[ -z "$provider" ]]; then
+        echo "unknown"
+        return
+    fi
+
+    # Normalize to lowercase for lookup (all keys are lowercase)
+    local provider_lower="${provider,,}"
+
+    local jurisdiction="${PROVIDER_JURISDICTION[$provider_lower]:-}"
+
+    echo "${jurisdiction:-unknown}"
+}
+
+# Check if provider is in a 5-Eyes country
+# Returns: 0 (true) if 5-Eyes, 1 (false) otherwise
+is_provider_five_eyes() {
+    local provider="$1"
+    local jurisdiction
+    jurisdiction=$(get_provider_jurisdiction "$provider")
+
+    case "$jurisdiction" in
+        US|GB|CA|AU|NZ) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+# Check for jurisdiction mismatch (server location vs provider jurisdiction)
+# Returns: "5-EYES-HOSTED", "JURISDICTION-MISMATCH", "UNKNOWN", or empty string
+# owned can be: "true", "false", or "unknown"
+check_jurisdiction_mismatch() {
+    local server_country="$1"
+    local provider="$2"
+    local owned="$3"
+
+    # If server is owned by VPN provider, trust the location
+    if [[ "$owned" == "true" ]]; then
+        echo ""
+        return
+    fi
+
+    # If ownership is unknown, we can't assess with confidence
+    if [[ "$owned" == "unknown" ]]; then
+        echo "UNKNOWN"
+        return
+    fi
+
+    # owned == "false" - check provider jurisdiction
+    local provider_jurisdiction
+    provider_jurisdiction=$(get_provider_jurisdiction "$provider")
+
+    # If provider jurisdiction unknown, can't assess
+    if [[ "$provider_jurisdiction" == "unknown" ]]; then
+        echo "UNKNOWN"
+        return
+    fi
+
+    local server_alliance provider_alliance
+    server_alliance=$(get_alliance "$server_country")
+    provider_alliance=$(get_alliance "$provider_jurisdiction")
+
+    # Check for dangerous mismatch: server claims non-5-Eyes but provider is 5-Eyes
+    if [[ "$server_alliance" == "Blind" ]] && is_provider_five_eyes "$provider"; then
+        echo "5-EYES-HOSTED"
+        return
+    fi
+
+    # Check for any alliance mismatch
+    if [[ "$server_alliance" != "$provider_alliance" ]]; then
+        echo "JURISDICTION-MISMATCH"
+        return
+    fi
+
+    echo ""
+}
+
+# Calculate recommendation with provider jurisdiction factored in
+# Usage: calculate_recommendation_v2 country privacy detection provider owned
+# owned can be: "true", "false", or "unknown"
+calculate_recommendation_v2() {
+    local country="$1"
+    local privacy="$2"
+    local detection="${3:-clean}"
+    local provider="${4:-}"
+    local owned="${5:-unknown}"
+
+    # Get alliance from country
+    local alliance
+    alliance=$(get_alliance "$country")
+
+    local score=0
+
+    # Alliance scoring (0-3 points)
+    # Unknown treated same as 5-Eyes (conservative - don't assume safe)
+    case "$alliance" in
+        "Blind")   score=$((score + 3)) ;;
+        "14-Eyes") score=$((score + 2)) ;;
+        "9-Eyes")  score=$((score + 1)) ;;
+        "5-Eyes"|"Unknown")  score=$((score + 0)) ;;
+    esac
+
+    # Privacy scoring (0-3 points based on 1-5 rating)
+    case "$privacy" in
+        5) score=$((score + 3)) ;;
+        4) score=$((score + 2)) ;;
+        3) score=$((score + 1)) ;;
+        2|1) score=$((score + 0)) ;;
+    esac
+
+    # Detection scoring (0-3 points)
+    case "$detection" in
+        "clean")   score=$((score + 3)) ;;
+        "partial") score=$((score + 1)) ;;
+        "flagged") score=$((score + 0)) ;;
+    esac
+
+    # Provider jurisdiction penalty (only when we have definite information)
+    if [[ "$owned" == "false" ]]; then
+        # Definitely rented - check for jurisdiction mismatch
+        local mismatch
+        mismatch=$(check_jurisdiction_mismatch "$country" "$provider" "$owned")
+
+        if [[ "$mismatch" == "5-EYES-HOSTED" ]]; then
+            # Severe penalty: non-5-Eyes location but 5-Eyes hosted
+            score=$((score - 4))
+        elif [[ "$mismatch" == "JURISDICTION-MISMATCH" ]]; then
+            # Moderate penalty
+            score=$((score - 2))
+        fi
+
+        # Penalty for third-party hosted (not owned by VPN provider)
+        score=$((score - 1))
+    elif [[ "$owned" == "unknown" ]]; then
+        # Unknown ownership - apply small uncertainty penalty
+        # Don't assume worst case, but don't give full confidence either
+        score=$((score - 1))
+    fi
+    # owned == "true" - no penalty (VPN provider owns the server)
+
+    # Ensure score doesn't go negative
+    [[ $score -lt 0 ]] && score=0
+
+    # Convert total to recommendation (0-3)
+    if [[ $score -ge 7 ]]; then
+        echo "3"
+    elif [[ $score -ge 5 ]]; then
+        echo "2"
+    elif [[ $score -ge 3 ]]; then
+        echo "1"
+    else
+        echo "0"
+    fi
+}
+
+# ============================================================================
 # DISPLAY HELPERS
 # ============================================================================
 
 # Print the legend for server selection table
 print_jurisdiction_legend() {
     echo "Legend:"
-    echo "  Alliance: 5-Eyes | 9-Eyes | 14-Eyes | Blind (non-ISN)"
+    echo "  Alliance: 5-Eyes | 9-Eyes | 14-Eyes | Blind (non-ISN) | Unknown"
     echo "  Privacy:  █████ Strong | ████░ Good | ███░░ Moderate | ██░░░ Fair | █░░░░ Weak"
+    echo "  Host:     ● owned | ○ rented | ? unknown | ⚑ 5-Eyes hosted (jurisdiction mismatch)"
     echo "  Detect:   ✓ clean | ⚠ partial | ✗ flagged | … pending"
     echo "  Rec:      ★★★ Recommended | ★★☆ Acceptable | ★☆☆ Caution | ☆☆☆ Avoid"
+}
+
+# Convert provider/owned status to symbol
+# owned can be: "true", "false", or "unknown"
+provider_to_symbol() {
+    local provider="$1"
+    local owned="$2"
+    local server_country="$3"
+
+    # Handle unknown ownership
+    if [[ "$owned" == "unknown" ]]; then
+        echo "?"  # Unknown ownership - can't assess hosting risk
+        return
+    fi
+
+    if [[ "$owned" == "true" ]]; then
+        echo "●"  # Owned by VPN provider
+        return
+    fi
+
+    # owned == "false" - check for jurisdiction mismatch
+    local server_alliance
+    server_alliance=$(get_alliance "$server_country")
+
+    # If server country is unknown, we can't assess mismatch
+    if [[ "$server_alliance" == "Unknown" ]]; then
+        echo "?"  # Unknown country - can't assess hosting risk
+        return
+    fi
+
+    local provider_jurisdiction
+    provider_jurisdiction=$(get_provider_jurisdiction "$provider")
+
+    # If we don't know the provider's jurisdiction, show unknown
+    if [[ "$provider_jurisdiction" == "unknown" ]]; then
+        echo "?"  # Unknown provider - can't assess hosting risk
+        return
+    fi
+
+    # Check for 5-Eyes hosted mismatch (only when server claims non-5-Eyes)
+    if [[ "$server_alliance" == "Blind" ]] && is_provider_five_eyes "$provider"; then
+        echo "⚑"  # Warning: 5-Eyes jurisdiction mismatch
+        return
+    fi
+
+    echo "○"  # Rented but no mismatch
 }
 
 # Format a single server row for display

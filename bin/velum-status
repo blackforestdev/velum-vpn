@@ -21,10 +21,14 @@ source "$VELUM_ROOT/lib/os/detect.sh"
 declare -A CONFIG
 CONFIG_FILE="$VELUM_CONFIG_FILE"
 
-# Load configuration to get provider (safe parsing - no source)
+# Load configuration to get provider (strict parsing - fail fast on malformed config)
 load_status_config() {
   if [[ -f "$CONFIG_FILE" ]]; then
-    safe_load_config "$CONFIG_FILE" 2>/dev/null || true
+    if ! safe_load_config "$CONFIG_FILE" --strict --known-keys-only; then
+      print_error "Failed to parse configuration file."
+      print_error "Run 'velum config lint' to diagnose issues."
+      exit 1
+    fi
   fi
 }
 

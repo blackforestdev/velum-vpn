@@ -227,7 +227,10 @@ monitor_loop() {
   chmod 600 "$PID_FILE" 2>/dev/null || true
 
   # Initialize state (root-only access)
-  echo "started=$(date +%s)" > "$STATE_FILE"
+  # Save started timestamp in variable to preserve across state file updates
+  local monitor_started
+  monitor_started=$(date +%s)
+  echo "started=$monitor_started" > "$STATE_FILE"
   chmod 600 "$STATE_FILE" 2>/dev/null || true
 
   # Notify user that monitoring has started
@@ -252,8 +255,9 @@ monitor_loop() {
     fi
 
     # Update state file (root-only, requires sudo for status)
+    # Note: use saved monitor_started variable, not file read (cat > truncates first)
     cat > "$STATE_FILE" << EOF
-started=$(grep "started=" "$STATE_FILE" 2>/dev/null | cut -d= -f2 || echo "$now")
+started=$monitor_started
 last_check=$now
 vpn_up=$vpn_up
 ks_active=$ks_active

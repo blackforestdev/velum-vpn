@@ -74,8 +74,11 @@ CONFIG_FILE="$VELUM_CONFIG_FILE"
 load_config() {
   if [[ -f "$CONFIG_FILE" ]]; then
     log_info "Loading existing configuration..."
-    # Use safe parser instead of source to prevent code injection
-    safe_load_config "$CONFIG_FILE" 2>/dev/null || true
+    # Use safe parser with strict mode - warn but continue if config is corrupt
+    if ! safe_load_config "$CONFIG_FILE" --strict --known-keys-only 2>/dev/null; then
+      print_warn "Failed to parse existing config; continuing with defaults."
+      print_warn "Run 'velum config lint' to diagnose issues."
+    fi
   fi
 }
 
@@ -413,6 +416,19 @@ phase_security() {
 phase_features() {
   print_section "PHASE 3: CONNECTION FEATURES"
 
+  # Check if provider has any optional features
+  local has_dip=false
+  local has_pf=false
+  provider_supports_dip && has_dip=true
+  provider_supports_pf && has_pf=true
+
+  if [[ "$has_dip" != "true" && "$has_pf" != "true" ]]; then
+    echo "$(provider_name) does not offer Dedicated IP or port forwarding."
+    echo "No optional features to configure."
+    echo
+    return
+  fi
+
   # Dedicated IP
   if provider_supports_dip; then
     echo "Dedicated IP provides a static IP address for your connection."
@@ -463,11 +479,23 @@ phase_features() {
 # PHASE 4: SERVER SELECTION
 # ============================================================================
 
+# Sanitize untrusted API strings for safe display and storage.
+# Strips control characters (ANSI escapes, etc.) and replaces field delimiters.
+_sanitize_field() {
+  local value="$1"
+  # Remove control characters (0x00-0x1F, 0x7F) to prevent terminal injection
+  # Replace pipe delimiter to prevent field parsing issues
+  value=$(printf '%s' "$value" | tr -d '[:cntrl:]' | tr '|' '/')
+  printf '%s' "$value"
+}
+
 # Helper: Extract server data by provider format
+# Output format: id|name|ip|hostname|country_code|host_provider|owned
+# Note: country_code is used for alliance/privacy lookups; name contains display name
 _extract_server_data() {
   local server="$1"
   local provider="$2"
-  local id name ip hostname country
+  local id name ip hostname country_code host_provider owned
 
   case "$provider" in
     mullvad)
@@ -475,27 +503,46 @@ _extract_server_data() {
       name=$(echo "$server" | jq -r '"\(.country_name) - \(.city_name)"')
       ip=$(echo "$server" | jq -r '.ipv4_addr_in // empty')
       hostname="$id"
-      country=$(echo "$server" | jq -r '.country_name')
+      # Use country_code (e.g., "US") for alliance/privacy lookups, not country_name
+      country_code=$(echo "$server" | jq -r '.country_code // empty' | tr '[:lower:]' '[:upper:]')
+      # Normalize host_provider: trim whitespace (preserve internal spaces), lowercase for matching
+      host_provider=$(echo "$server" | jq -r '.provider // "unknown"' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | tr '[:upper:]' '[:lower:]')
+      owned=$(echo "$server" | jq -r '.owned // false')
       ;;
     ivpn)
       id=$(echo "$server" | jq -r '.hosts[0].hostname')
       name=$(echo "$server" | jq -r '"\(.country) - \(.city)"')
       ip=$(echo "$server" | jq -r '.hosts[0].host // empty')
       hostname="$id"
-      country=$(echo "$server" | jq -r '.country')
+      # IVPN uses country name; extract country code if available, else use name
+      country_code=$(echo "$server" | jq -r '.country_code // empty' | tr '[:lower:]' '[:upper:]')
+      if [[ -z "$country_code" ]]; then
+        # Fallback: use country name (less reliable for lookups)
+        country_code=$(echo "$server" | jq -r '.country // empty')
+      fi
+      # IVPN doesn't expose provider/owned - mark as unknown
+      host_provider="unknown"
+      owned="unknown"
       ;;
     *)  # PIA
       id=$(echo "$server" | jq -r '.id')
       name=$(echo "$server" | jq -r '.name')
       ip=$(echo "$server" | jq -r '.servers.wg[0].ip // empty')
       hostname=$(echo "$server" | jq -r '.servers.wg[0].cn // empty')
-      # PIA names are like "US New York" - extract country
-      country="${name%% *}"
+      # PIA names are like "US New York" - extract country code prefix
+      country_code="${name%% *}"
+      # PIA doesn't expose provider/owned - mark as unknown
+      host_provider="unknown"
+      owned="unknown"
       ;;
   esac
 
-  # Output: id|name|ip|hostname|country
-  echo "${id}|${name}|${ip}|${hostname}|${country}"
+  # Sanitize user-facing fields to prevent control char injection and delimiter issues
+  name=$(_sanitize_field "$name")
+  host_provider=$(_sanitize_field "$host_provider")
+
+  # Output: id|name|ip|hostname|country_code|host_provider|owned
+  echo "${id}|${name}|${ip}|${hostname}|${country_code}|${host_provider}|${owned}"
 }
 
 # Helper: Check detection status for servers before display
@@ -561,23 +608,27 @@ _display_server_table() {
 
   echo
   echo "Server Selection (sorted by latency):"
-  echo "───────────────────────────────────────────────────────────────────────────────────"
-  printf "  %-3s %7s   %-26s %-8s %-5s %-3s %s\n" "#" "Latency" "Location" "Alliance" "Priv" "Det" "Rec"
-  echo "───────────────────────────────────────────────────────────────────────────────────"
+  echo "──────────────────────────────────────────────────────────────────────────────────────────"
+  printf "  %-3s %7s   %-24s %-8s %-5s %-4s %-3s %s\n" "#" "Latency" "Location" "Alliance" "Priv" "Host" "Det" "Rec"
+  echo "──────────────────────────────────────────────────────────────────────────────────────────"
 
   local i=1
   for entry in "${entries[@]}"; do
     [[ $i -gt $max_display ]] && break
 
-    # Parse entry: latency|id|name|ip|hostname|country
-    local latency id name ip hostname country
-    IFS='|' read -r latency id name ip hostname country <<< "$entry"
+    # Parse entry: latency|id|name|ip|hostname|country_code|host_provider|owned
+    local latency id name ip hostname country_code host_provider owned
+    IFS='|' read -r latency id name ip hostname country_code host_provider owned <<< "$entry"
 
     # Get jurisdiction info
     local alliance privacy_rating privacy_bar
-    alliance=$(get_alliance "$country")
-    privacy_rating=$(get_privacy "$country")
+    alliance=$(get_alliance "$country_code")
+    privacy_rating=$(get_privacy "$country_code")
     privacy_bar=$(privacy_to_bar "$privacy_rating")
+
+    # Get host provider status symbol
+    local host_sym
+    host_sym=$(provider_to_symbol "$host_provider" "$owned" "$country_code")
 
     # Get detection status (from cache or "…" if not yet checked)
     local detection detection_sym
@@ -589,12 +640,12 @@ _display_server_table() {
       detection="checking"
     fi
 
-    # Calculate recommendation
+    # Calculate recommendation (using v2 with provider jurisdiction)
     local rec rec_stars
     if [[ "$detection" != "checking" ]]; then
-      rec=$(calculate_recommendation "$alliance" "$privacy_rating" "$detection")
+      rec=$(calculate_recommendation_v2 "$country_code" "$privacy_rating" "$detection" "$host_provider" "$owned")
     else
-      rec=$(calculate_recommendation "$alliance" "$privacy_rating" "clean")  # Assume clean for now
+      rec=$(calculate_recommendation_v2 "$country_code" "$privacy_rating" "clean" "$host_provider" "$owned")
     fi
     rec_stars=$(recommendation_to_stars "$rec")
 
@@ -608,7 +659,7 @@ _display_server_table() {
 
     # Truncate location if needed
     local loc_display="${name}"
-    [[ ${#loc_display} -gt 26 ]] && loc_display="${loc_display:0:23}..."
+    [[ ${#loc_display} -gt 24 ]] && loc_display="${loc_display:0:21}..."
 
     # Color code based on recommendation
     local row_color=""
@@ -620,13 +671,13 @@ _display_server_table() {
       0) row_color="${C_RED:-}" ;;
     esac
 
-    printf "%s%3d. %7s   %-26s %-8s %s  %s   %s%s\n" \
-      "$row_color" "$i" "$latency_fmt" "$loc_display" "$alliance" "$privacy_bar" "$detection_sym" "$rec_stars" "$reset"
+    printf "%s%3d. %7s   %-24s %-8s %s  %s    %s   %s%s\n" \
+      "$row_color" "$i" "$latency_fmt" "$loc_display" "$alliance" "$privacy_bar" "$host_sym" "$detection_sym" "$rec_stars" "$reset"
 
     ((i++)) || true
   done
 
-  echo "───────────────────────────────────────────────────────────────────────────────────"
+  echo "──────────────────────────────────────────────────────────────────────────────────────────"
   echo
   print_jurisdiction_legend
   echo
@@ -699,10 +750,10 @@ phase_server() {
     local server_data=()
 
     while IFS= read -r server; do
-      local extracted id name ip hostname country latency
+      local extracted id name ip hostname country_code host_provider owned latency
 
       extracted=$(_extract_server_data "$server" "${CONFIG[provider]}")
-      IFS='|' read -r id name ip hostname country <<< "$extracted"
+      IFS='|' read -r id name ip hostname country_code host_provider owned <<< "$extracted"
 
       [[ -z "$ip" || "$ip" == "null" ]] && continue
 
@@ -719,8 +770,8 @@ phase_server() {
 
         # Only include if within threshold
         if [[ "$latency" -le "$threshold" ]]; then
-          # Store: latency|id|name|ip|hostname|country
-          server_data+=("${latency}|${id}|${name}|${ip}|${hostname}|${country}")
+          # Store: latency|id|name|ip|hostname|country_code|host_provider|owned
+          server_data+=("${latency}|${id}|${name}|${ip}|${hostname}|${country_code}|${host_provider}|${owned}")
         fi
       else
         echo "timeout"
@@ -759,8 +810,8 @@ phase_server() {
 
     local i=1
     for entry in "${sorted_data[@]}"; do
-      local latency id name ip hostname country
-      IFS='|' read -r latency id name ip hostname country <<< "$entry"
+      local latency id name ip hostname country_code host_provider owned
+      IFS='|' read -r latency id name ip hostname country_code host_provider owned <<< "$entry"
       region_ids+=("$id")
       region_names+=("$name")
       region_ips+=("$ip")
@@ -780,6 +831,33 @@ phase_server() {
       CONFIG[selected_ip]="${region_ips[$idx]}"
       CONFIG[selected_hostname]="${region_hostnames[$idx]}"
       print_ok "Selected: ${region_names[$idx]}"
+
+      # Check for jurisdiction mismatch warning
+      local selected_entry="${sorted_data[$idx]}"
+      local _lat _id _name _ip _host _country_code _host_provider _owned
+      IFS='|' read -r _lat _id _name _ip _host _country_code _host_provider _owned <<< "$selected_entry"
+
+      if [[ "$_owned" == "false" && -n "$_host_provider" && "$_host_provider" != "unknown" ]]; then
+        local mismatch
+        mismatch=$(check_jurisdiction_mismatch "$_country_code" "$_host_provider" "$_owned")
+
+        if [[ "$mismatch" == "5-EYES-HOSTED" ]]; then
+          # Get display name from the entry
+          local display_location="$_name"
+          echo
+          print_warn "JURISDICTION WARNING: This server claims '$display_location'"
+          print_warn "but is hosted by $_host_provider (US-based, 5-Eyes jurisdiction)."
+          print_warn "Traffic may route through US infrastructure despite the claimed location."
+          echo
+          if ! ask_yn "Continue with this selection?" "n"; then
+            print_info "Server selection cancelled. Using auto mode."
+            CONFIG[server_auto]="true"
+            CONFIG[selected_region]=""
+            CONFIG[selected_ip]=""
+            CONFIG[selected_hostname]=""
+          fi
+        fi
+      fi
     else
       print_error "Invalid selection. Using auto mode."
       CONFIG[server_auto]="true"

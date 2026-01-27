@@ -50,8 +50,12 @@ declare -A CONFIG
 
 load_test_config() {
   if [[ -f "$CONFIG_FILE" ]]; then
-    # Use safe parser instead of source to prevent code injection
-    safe_load_config "$CONFIG_FILE" 2>/dev/null || true
+    # Use safe parser with strict mode - fail fast on malformed/tampered config
+    if ! safe_load_config "$CONFIG_FILE" --strict --known-keys-only; then
+      print_error "Failed to parse configuration file."
+      print_error "Run 'velum config lint' to diagnose issues."
+      exit 1
+    fi
   fi
 }
 
