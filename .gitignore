@@ -44,3 +44,6 @@ token
 # Build artifacts (future)
 /dist/
 /build/
+
+# Development handoff (not in repo)
+HANDOFF.md

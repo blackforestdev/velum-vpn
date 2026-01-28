@@ -44,11 +44,77 @@ export VELUM_ROOT
 # CONFIGURATION PATHS (XDG Base Directory Specification)
 # ============================================================================
 
+# Validate username format to prevent injection via SUDO_USER
+# Only allows: starts with letter or underscore, then alphanumeric/underscore/hyphen, max 32 chars
+_validate_username() {
+  local user="$1"
+  [[ "$user" =~ ^[a-z_][a-z0-9_-]{0,31}$ ]]
+}
+
+# Get real user context for credential operations (FAIL-CLOSED)
+# Returns user home directory or exits with error if cannot determine
+# Use this for credential/security operations where fallback is unacceptable
+# Usage: local cred_home; cred_home=$(get_credential_user_home) || exit 1
+get_credential_user_home() {
+  local real_home=""
+
+  if [[ -n "${SUDO_USER:-}" ]]; then
+    # Must validate - no fallback for credential operations
+    if ! _validate_username "$SUDO_USER"; then
+      log_error "Invalid SUDO_USER format - cannot determine credential storage location"
+      return 1
+    fi
+
+    if [[ "$(uname)" == "Darwin" ]]; then
+      real_home=$(dscl . -read "/Users/$SUDO_USER" NFSHomeDirectory 2>/dev/null | awk '{print $2}')
+    else
+      real_home=$(getent passwd "$SUDO_USER" 2>/dev/null | cut -d: -f6)
+    fi
+
+    if [[ -z "$real_home" ]]; then
+      log_error "Cannot resolve home directory for user: $SUDO_USER"
+      return 1
+    fi
+  else
+    real_home="${HOME:-}"
+    if [[ -z "$real_home" ]]; then
+      log_error "HOME not set and no SUDO_USER - cannot determine credential storage location"
+      return 1
+    fi
+  fi
+
+  echo "$real_home"
+}
+
+# Get real user for credential operations (FAIL-CLOSED)
+# Returns username or exits with error
+get_credential_user() {
+  if [[ -n "${SUDO_USER:-}" ]]; then
+    if ! _validate_username "$SUDO_USER"; then
+      log_error "Invalid SUDO_USER format"
+      return 1
+    fi
+    echo "$SUDO_USER"
+  elif [[ -n "${USER:-}" ]]; then
+    echo "$USER"
+  else
+    log_error "Cannot determine user for credential operations"
+    return 1
+  fi
+}
+
 # XDG config directory (default: ~/.config)
 _get_config_home() {
   if [[ -n "${XDG_CONFIG_HOME:-}" ]]; then
     echo "$XDG_CONFIG_HOME"
   elif [[ -n "${SUDO_USER:-}" ]]; then
+    # Validate SUDO_USER before using in path operations
+    if ! _validate_username "$SUDO_USER"; then
+      # Invalid username format - fall back to HOME
+      echo "${HOME:-.}/.config"
+      return
+    fi
+
     # Running as root via sudo - get real user's home
     local real_home
     if [[ "$(uname)" == "Darwin" ]]; then
@@ -135,7 +201,7 @@ ensure_config_dir() {
     chmod "$mode" "$dir"
 
     # If running as root via sudo, fix ownership
-    if [[ -n "${SUDO_USER:-}" ]]; then
+    if [[ -n "${SUDO_USER:-}" ]] && _validate_username "$SUDO_USER"; then
       local sudo_uid sudo_gid
       sudo_uid=$(id -u "$SUDO_USER" 2>/dev/null)
       sudo_gid=$(id -g "$SUDO_USER" 2>/dev/null)
@@ -201,7 +267,7 @@ migrate_legacy_config() {
   fi
 
   # Fix ownership if running as root via sudo
-  if [[ "$migrated" == "true" && -n "${SUDO_USER:-}" ]]; then
+  if [[ "$migrated" == "true" && -n "${SUDO_USER:-}" ]] && _validate_username "$SUDO_USER"; then
     local sudo_uid sudo_gid
     sudo_uid=$(id -u "$SUDO_USER" 2>/dev/null)
     sudo_gid=$(id -g "$SUDO_USER" 2>/dev/null)
@@ -460,7 +526,7 @@ require_root() {
 
 # Get real home directory (works with sudo)
 get_home() {
-  if [[ -n "${SUDO_USER:-}" ]]; then
+  if [[ -n "${SUDO_USER:-}" ]] && _validate_username "$SUDO_USER"; then
     if [[ "$(uname)" == "Darwin" ]]; then
       dscl . -read "/Users/$SUDO_USER" NFSHomeDirectory 2>/dev/null | awk '{print $2}'
     else
@@ -473,7 +539,11 @@ get_home() {
 
 # Get real username (works with sudo)
 get_user() {
-  echo "${SUDO_USER:-$USER}"
+  if [[ -n "${SUDO_USER:-}" ]] && _validate_username "$SUDO_USER"; then
+    echo "$SUDO_USER"
+  else
+    echo "$USER"
+  fi
 }
 
 # ============================================================================

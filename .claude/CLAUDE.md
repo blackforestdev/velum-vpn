@@ -1,5 +1,64 @@
 # Project Instructions
 
+## Security-First Philosophy
+
+Velum is an **ultra-hardened VPN tool**. Security is not a feature—it is the foundation. Every design decision, code change, and feature addition MUST be evaluated through a security lens.
+
+### Core Principles
+
+1. **Assume Device Capture**
+   - Design as if the user's device will be seized by an adversary (LEO, border agents, thieves)
+   - Persistent storage of credentials is a liability, not a convenience
+   - Minimize forensic footprint on disk
+
+2. **Credentials Are Toxic**
+   - Account IDs (Mullvad, IVPN) ARE the authentication—possession = access
+   - NEVER store credentials in plaintext by default
+   - Short-lived tokens may be cached; permanent credentials require explicit user opt-in with encryption
+
+3. **Fail Closed, Not Open**
+   - When in doubt, block traffic rather than leak it
+   - Parse errors = reject, not warn-and-continue (for security-critical configs)
+   - Missing authentication = refuse to connect, not prompt inline
+
+4. **No Silent Network Calls**
+   - Network operations require explicit or configured consent
+   - Background refresh without user awareness is a privacy violation
+
+5. **Defense in Depth**
+   - Multiple layers: firewall rules + interface config + DNS protection
+   - Don't rely on any single mechanism
+
+6. **Minimize Trust Surface**
+   - Don't trust API responses blindly—validate and sanitize
+   - Don't trust config files—parse safely, never `source`
+   - Don't trust environment—validate paths, check permissions
+
+### Security Review Checklist
+
+Before committing ANY code, verify:
+- [ ] No plaintext credential storage introduced
+- [ ] No new `source` of untrusted files
+- [ ] No command injection vectors (unquoted variables in commands)
+- [ ] No path traversal vulnerabilities
+- [ ] Sensitive data cleared from memory after use (`unset`)
+- [ ] File permissions are restrictive (600 for secrets, 700 for dirs)
+- [ ] Ownership set correctly under sudo
+- [ ] Error messages don't leak sensitive information
+
+### Threat Model Awareness
+
+Velum users may face:
+- State-level adversaries
+- Device seizure at borders
+- Compelled credential disclosure
+- Network-level surveillance
+- Endpoint compromise
+
+Design for the paranoid user. Convenience features must be opt-in, not default.
+
+---
+
 ## Git Commits
 - Do NOT include Claude Code attribution in commits
 - Do NOT include co-authorship lines

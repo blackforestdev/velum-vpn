@@ -232,6 +232,9 @@ DNS = $dns_server, 9.9.9.9"
   fi
 
   # Add PostUp for kill switch
+  # Note: Variables are validated before this point (validate_ipv4, validate_port,
+  # validate_killswitch_lan) so injection is prevented at validation, not here.
+  # Quoting omitted to avoid wg-quick shell parsing issues.
   if [[ "${CONFIG[killswitch]:-false}" == "true" ]]; then
     local ks_cmd="$VELUM_ROOT/bin/velum-killswitch enable"
     ks_cmd="$ks_cmd --vpn-ip $server_ip"
@@ -252,6 +255,8 @@ PostDown = $VELUM_ROOT/bin/velum-killswitch notify"
 
   # Add DNS route fix - ensure DNS goes through tunnel
   # PIA uses 10.0.0.243 which may conflict with common LAN subnets
+  # Note: dns_server is validated as IPv4 (validate_ipv4) before reaching here,
+  # so it cannot contain spaces/special chars - quoting not required
   if [[ -n "$dns_server" ]]; then
     if [[ "$(uname)" == "Darwin" ]]; then
       config="$config

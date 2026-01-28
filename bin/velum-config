@@ -120,7 +120,8 @@ save_config() {
   chmod 600 "$CONFIG_FILE"
 
   # Fix ownership if running as root via sudo
-  if [[ -n "${SUDO_USER:-}" ]]; then
+  # Note: _validate_username is defined in velum-core.sh
+  if [[ -n "${SUDO_USER:-}" ]] && _validate_username "$SUDO_USER"; then
     local sudo_uid sudo_gid
     sudo_uid=$(id -u "$SUDO_USER" 2>/dev/null)
     sudo_gid=$(id -g "$SUDO_USER" 2>/dev/null)
@@ -275,9 +276,9 @@ _auth_username_password() {
     exit 1
   fi
 
-  # Clear credentials from memory
-  CONFIG[username]=""
-  CONFIG[password]=""
+  # Clear credentials from memory - use unset to remove from shell memory
+  # Setting to "" leaves the variable allocated; unset deallocates it
+  unset 'CONFIG[username]' 'CONFIG[password]'
 }
 
 # Account number authentication (Mullvad style)
@@ -325,8 +326,8 @@ _auth_account_number() {
     exit 1
   fi
 
-  # Clear account number from config (it's saved separately)
-  CONFIG[username]=""
+  # Clear account number from memory - use unset to fully remove
+  unset 'CONFIG[username]'
 }
 
 # ============================================================================

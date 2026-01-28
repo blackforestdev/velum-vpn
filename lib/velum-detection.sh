@@ -36,7 +36,7 @@ init_detection_cache() {
     fi
 
     # Fix ownership if running as root via sudo
-    if [[ -n "${SUDO_USER:-}" ]]; then
+    if [[ -n "${SUDO_USER:-}" ]] && _validate_username "$SUDO_USER"; then
         local sudo_uid sudo_gid
         sudo_uid=$(id -u "$SUDO_USER" 2>/dev/null)
         sudo_gid=$(id -g "$SUDO_USER" 2>/dev/null)

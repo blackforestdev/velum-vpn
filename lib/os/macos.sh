@@ -404,7 +404,8 @@ os_killswitch_rule_count() {
 # Works even when SUDO_USER is not set (e.g., from PostDown scripts)
 _get_console_user() {
   # Method 1: Check SUDO_USER (set when using sudo)
-  if [[ -n "${SUDO_USER:-}" ]]; then
+  # Validate format before using
+  if [[ -n "${SUDO_USER:-}" && "$SUDO_USER" =~ ^[a-z_][a-z0-9_-]{0,31}$ ]]; then
     echo "$SUDO_USER"
     return 0
   fi
@@ -464,7 +465,8 @@ os_notify() {
 
 # Get user's home directory (works with sudo)
 os_get_home() {
-  if [[ -n "${SUDO_USER:-}" ]]; then
+  # Validate SUDO_USER format before using in system calls
+  if [[ -n "${SUDO_USER:-}" && "$SUDO_USER" =~ ^[a-z_][a-z0-9_-]{0,31}$ ]]; then
     dscl . -read "/Users/$SUDO_USER" NFSHomeDirectory 2>/dev/null | awk '{print $2}'
   else
     echo "$HOME"

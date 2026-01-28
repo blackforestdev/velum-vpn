@@ -343,15 +343,15 @@ _generate_iptables_rules() {
 -A $VELUM_IPTABLES_CHAIN -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
 
 # Allow VPN tunnel interface
--A $VELUM_IPTABLES_CHAIN -o $vpn_iface -j ACCEPT
--A $VELUM_IPTABLES_CHAIN -i $vpn_iface -j ACCEPT
+-A $VELUM_IPTABLES_CHAIN -o "$vpn_iface" -j ACCEPT
+-A $VELUM_IPTABLES_CHAIN -i "$vpn_iface" -j ACCEPT
 
 # Allow traffic TO VPN server
--A $VELUM_IPTABLES_CHAIN -o $physical_iface -p udp -d $vpn_ip --dport $vpn_port -j ACCEPT
+-A $VELUM_IPTABLES_CHAIN -o "$physical_iface" -p udp -d "$vpn_ip" --dport "$vpn_port" -j ACCEPT
 
 # Allow DHCP
--A $VELUM_IPTABLES_CHAIN -o $physical_iface -p udp --sport 68 --dport 67 -j ACCEPT
--A $VELUM_IPTABLES_CHAIN -i $physical_iface -p udp --sport 67 --dport 68 -j ACCEPT
+-A $VELUM_IPTABLES_CHAIN -o "$physical_iface" -p udp --sport 68 --dport 67 -j ACCEPT
+-A $VELUM_IPTABLES_CHAIN -i "$physical_iface" -p udp --sport 67 --dport 68 -j ACCEPT
 
 EOF
 
@@ -365,7 +365,7 @@ EOF
     if [[ -n "$subnet" ]]; then
       cat << EOF
 # Allow local network ($subnet)
--A $VELUM_IPTABLES_CHAIN -s $subnet -d $subnet -j ACCEPT
+-A $VELUM_IPTABLES_CHAIN -s "$subnet" -d "$subnet" -j ACCEPT
 
 EOF
     fi
@@ -700,7 +700,8 @@ os_notify() {
 
 # Get user's home directory (works with sudo)
 os_get_home() {
-  if [[ -n "${SUDO_USER:-}" ]]; then
+  # Validate SUDO_USER format before using in system calls
+  if [[ -n "${SUDO_USER:-}" && "$SUDO_USER" =~ ^[a-z_][a-z0-9_-]{0,31}$ ]]; then
     getent passwd "$SUDO_USER" 2>/dev/null | cut -d: -f6
   else
     echo "$HOME"
