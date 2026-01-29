@@ -33,6 +33,7 @@ COMMANDS
     config          Configure VPN settings interactively
     config lint     Validate configuration file for errors
     connect         Connect to VPN (requires sudo)
+    credential      Manage encrypted credential vault
     disconnect      Disconnect from VPN (requires sudo)
     status          Show connection status (sudo for full details)
     test            Comprehensive leak and connection testing (requires sudo)
@@ -97,6 +98,9 @@ main() {
       ;;
     connect)
       exec "$SCRIPT_DIR/velum-connect" "$@"
+      ;;
+    credential)
+      exec "$SCRIPT_DIR/velum-credential" "$@"
       ;;
     disconnect)
       exec "$SCRIPT_DIR/velum-disconnect" "$@"

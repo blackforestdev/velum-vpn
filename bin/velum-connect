@@ -16,6 +16,7 @@ export VELUM_ROOT
 source "$VELUM_ROOT/lib/velum-core.sh"
 source "$VELUM_ROOT/lib/velum-security.sh"
 source "$VELUM_ROOT/lib/velum-credential.sh"
+source "$VELUM_ROOT/lib/velum-vault.sh"
 source "$VELUM_ROOT/lib/os/detect.sh"
 source "$VELUM_ROOT/lib/providers/provider-base.sh"
 
@@ -163,12 +164,21 @@ find_best_server() {
 # WIREGUARD CONNECTION
 # ============================================================================
 
-# WireGuard key storage
-WG_KEY_FILE="${VELUM_TOKENS_DIR}/wg_private_key"
+# WireGuard key storage (tmpfs - cleared on reboot for security)
+# Using VELUM_RUNTIME_DIR ensures keys don't persist on disk
+WG_KEY_FILE="${VELUM_RUNTIME_DIR}/wg_private_key"
 
 # Generate or load WireGuard keypair
+# Keys stored in tmpfs (VELUM_RUNTIME_DIR) - cleared on reboot
 generate_wg_keys() {
-  # Check if we have a saved key
+  # Ensure runtime directory exists
+  if ! ensure_runtime_dir; then
+    print_error "Cannot create runtime directory for WireGuard keys"
+    print_error "XDG_RUNTIME_DIR must be available (tmpfs)"
+    exit 1
+  fi
+
+  # Check if we have a saved key (from current session)
   if [[ -f "$WG_KEY_FILE" ]]; then
     log_info "Loading existing WireGuard key..."
     WG_PRIVATE_KEY=$(cat "$WG_KEY_FILE")
@@ -179,13 +189,15 @@ generate_wg_keys() {
     WG_PRIVATE_KEY=$(wg genkey)
     WG_PUBLIC_KEY=$(echo "$WG_PRIVATE_KEY" | wg pubkey)
 
-    # Save the key for future use
-    ensure_config_dir "$VELUM_TOKENS_DIR" 700
-    echo "$WG_PRIVATE_KEY" > "$WG_KEY_FILE"
+    # Save the key for reconnects within this session (tmpfs - cleared on reboot)
+    (
+      umask 077
+      echo "$WG_PRIVATE_KEY" > "$WG_KEY_FILE"
+    )
     chmod 600 "$WG_KEY_FILE"
 
     # Fix ownership if running as root via sudo
-    if [[ -n "${SUDO_USER:-}" ]]; then
+    if [[ -n "${SUDO_USER:-}" ]] && _validate_username "$SUDO_USER"; then
       local sudo_uid sudo_gid
       sudo_uid=$(id -u "$SUDO_USER" 2>/dev/null)
       sudo_gid=$(id -g "$SUDO_USER" 2>/dev/null)
@@ -559,8 +571,30 @@ main() {
   local account_credential=""
 
   if [[ "${CONFIG[provider]}" == "mullvad" ]]; then
-    echo "Mullvad requires your account number for WireGuard key registration."
-    account_credential=$(ask_password "Account number (16 digits)")
+    # Check if vault has a credential available
+    if vault_is_initialized && vault_has_credentials; then
+      print_info "Vault has stored credentials."
+      if ask_yn "Use credential from vault?" "y"; then
+        local vault_pass
+        vault_pass=$(ask_password "Vault password")
+        if [[ -n "$vault_pass" ]]; then
+          local vault_cred
+          vault_cred=$(vault_get_credential "mullvad" "$vault_pass" 2>/dev/null) || true
+          if [[ -n "$vault_cred" ]]; then
+            account_credential="$vault_cred"
+          else
+            print_warn "No Mullvad credential in vault or wrong password"
+          fi
+          unset vault_cred vault_pass
+        fi
+      fi
+    fi
+
+    # Fall back to prompt if vault wasn't used
+    if [[ -z "$account_credential" ]]; then
+      echo "Mullvad requires your account number for WireGuard key registration."
+      account_credential=$(ask_password "Account number (16 digits)")
+    fi
 
     if [[ -z "$account_credential" ]]; then
       print_error "Account number is required for Mullvad WireGuard key exchange."

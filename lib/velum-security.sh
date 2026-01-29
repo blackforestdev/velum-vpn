@@ -125,6 +125,7 @@ validate_killswitch_lan() {
 # Known valid config keys (keep in sync with velum-config save_config)
 readonly VELUM_KNOWN_CONFIG_KEYS=(
   "provider"
+  "credential_source"
   "killswitch"
   "killswitch_lan"
   "ipv6_disabled"
@@ -231,6 +232,12 @@ safe_load_config() {
         killswitch_lan)
           if ! validate_killswitch_lan "$value"; then
             validation_error="Invalid killswitch_lan value: '$value' (must be detect, block, or CIDR)"
+          fi
+          ;;
+        # Credential source: prompt, vault, or command
+        credential_source)
+          if [[ "$value" != "prompt" && "$value" != "vault" && "$value" != "command" ]]; then
+            validation_error="Invalid credential_source value: '$value' (must be prompt, vault, or command)"
           fi
           ;;
         # Provider: must be alphanumeric/underscore only

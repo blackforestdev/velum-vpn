@@ -440,7 +440,7 @@ migrate_plaintext_credentials() {
 migrate_tokens_to_runtime() {
   local legacy_tokens_dir="${VELUM_TOKENS_DIR:-$HOME/.config/velum/tokens}"
 
-  # Look for token files (not account files)
+  # Look for provider-specific token files
   for provider in mullvad ivpn pia; do
     local legacy_token="${legacy_tokens_dir}/${provider}_token"
 
@@ -464,6 +464,101 @@ migrate_tokens_to_runtime() {
       fi
     fi
   done
+
+  # Migrate generic "token" file (used by PIA)
+  local legacy_generic="${legacy_tokens_dir}/token"
+  if [[ -f "$legacy_generic" ]]; then
+    log_info "Migrating generic token to runtime storage..."
+    if check_file_security "$legacy_generic" "warn"; then
+      local token expiry
+      token=$(sed -n '1p' "$legacy_generic" 2>/dev/null)
+      expiry=$(sed -n '2p' "$legacy_generic" 2>/dev/null)
+      if [[ -n "$token" ]]; then
+        credential_store_token "pia" "$token" "$expiry"
+        secure_delete "$legacy_generic"
+        log_info "Generic token migrated to tmpfs"
+      fi
+    fi
+  fi
+}
+
+# Clean up legacy session material from disk storage
+# This removes WireGuard keys and tokens that should be in tmpfs
+# Usage: cleanup_legacy_session_files [--silent]
+cleanup_legacy_session_files() {
+  local silent="${1:-}"
+  local legacy_tokens_dir="${VELUM_TOKENS_DIR:-$HOME/.config/velum/tokens}"
+  local found_files=()
+
+  # Files that should NOT be on disk (session material)
+  local session_files=(
+    "${legacy_tokens_dir}/wg_private_key"
+    "${legacy_tokens_dir}/token"
+    "${legacy_tokens_dir}/mullvad_token"
+    "${legacy_tokens_dir}/ivpn_token"
+    "${legacy_tokens_dir}/pia_token"
+  )
+
+  for file in "${session_files[@]}"; do
+    if [[ -f "$file" ]]; then
+      found_files+=("$file")
+    fi
+  done
+
+  if [[ ${#found_files[@]} -eq 0 ]]; then
+    [[ "$silent" != "--silent" ]] && log_debug "No legacy session files found on disk"
+    return 0
+  fi
+
+  if [[ "$silent" != "--silent" ]]; then
+    print_warn "Found ${#found_files[@]} session file(s) on disk (security risk):"
+    for file in "${found_files[@]}"; do
+      echo "  - $file"
+    done
+    echo
+    print_info "Session material should be in tmpfs (cleared on reboot)."
+    echo
+  fi
+
+  if [[ "$silent" == "--silent" ]] || ask_yn "Securely delete these files?" "y"; then
+    for file in "${found_files[@]}"; do
+      [[ "$silent" != "--silent" ]] && echo -n "  Deleting $file... "
+      secure_delete "$file"
+      [[ "$silent" != "--silent" ]] && echo "done"
+    done
+    [[ "$silent" != "--silent" ]] && print_ok "Legacy session files removed."
+  fi
+
+  return 0
+}
+
+# Clean up legacy vault key cache from tmpfs
+# The vault now uses inline unlock (password each time), so cached keys are a security issue
+# Usage: cleanup_vault_key_cache [--silent]
+cleanup_vault_key_cache() {
+  local silent="${1:-}"
+  local vault_key_cache="${VELUM_RUNTIME_DIR}/vault_key"
+
+  if [[ ! -f "$vault_key_cache" ]]; then
+    return 0
+  fi
+
+  if [[ "$silent" != "--silent" ]]; then
+    print_warn "Found cached vault key (security risk):"
+    echo "  - $vault_key_cache"
+    echo
+    print_info "Vault now uses inline unlock - keys should not be cached."
+    echo
+  fi
+
+  if [[ "$silent" == "--silent" ]] || ask_yn "Securely delete cached vault key?" "y"; then
+    [[ "$silent" != "--silent" ]] && echo -n "  Deleting $vault_key_cache... "
+    secure_delete "$vault_key_cache"
+    [[ "$silent" != "--silent" ]] && echo "done"
+    [[ "$silent" != "--silent" ]] && print_ok "Cached vault key removed."
+  fi
+
+  return 0
 }
 
 # ============================================================================

@@ -22,6 +22,7 @@ export VELUM_ROOT
 source "$VELUM_ROOT/lib/velum-core.sh"
 source "$VELUM_ROOT/lib/velum-security.sh"
 source "$VELUM_ROOT/lib/velum-credential.sh"
+source "$VELUM_ROOT/lib/velum-vault.sh"
 source "$VELUM_ROOT/lib/velum-jurisdiction.sh"
 source "$VELUM_ROOT/lib/velum-detection.sh"
 source "$VELUM_ROOT/lib/os/detect.sh"
@@ -299,16 +300,33 @@ _auth_account_number() {
   local creds_file
   creds_file="$(os_get_home)/.${CONFIG[provider]}_credentials"
 
-  # Try to load account from file
-  if [[ -f "$creds_file" ]]; then
+  # Check if vault has credentials available
+  if vault_is_initialized && vault_has_credentials; then
+    print_info "Vault has stored credentials."
+    if ask_yn "Use credential from vault?" "y"; then
+      local vault_pass
+      vault_pass=$(ask_password "Vault password")
+      if [[ -n "$vault_pass" ]]; then
+        local vault_cred
+        vault_cred=$(vault_get_credential "${CONFIG[provider]}" "$vault_pass" 2>/dev/null) || true
+        if [[ -n "$vault_cred" ]]; then
+          CONFIG[username]="$vault_cred"
+        else
+          print_warn "No credential for ${CONFIG[provider]} in vault or wrong password"
+        fi
+        unset vault_cred vault_pass
+      fi
+    fi
+  fi
+
+  # Check legacy credentials file if vault wasn't used
+  if [[ -z "${CONFIG[username]:-}" ]] && [[ -f "$creds_file" ]]; then
     print_info "Found credentials file: $creds_file"
     CONFIG[username]=$(sed -n '1p' "$creds_file" 2>/dev/null || echo "")
   fi
 
-  # Prompt for account number if not loaded
-  # NOTE: Account numbers are treated as sensitive (they're both username AND password)
-  # Anyone with the number has full account access - mask input like a password
-  if [[ -z "${CONFIG[username]}" ]]; then
+  # Still no credential? Prompt for it
+  if [[ -z "${CONFIG[username]:-}" ]]; then
     case "${CONFIG[provider]}" in
       mullvad)
         echo "Enter your Mullvad account number (16 digits)."

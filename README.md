@@ -14,6 +14,7 @@ velum-vpn provides a unified command-line interface for connecting to multiple V
 - **DNS Fallback**: Quad9 (9.9.9.9) as secondary DNS, routed through VPN tunnel
 - **WebRTC Leak Detection**: Automated risk assessment and browser-based testing
 - **VPN Detection Check**: Tests if your IP is flagged by detection services
+- **Encrypted Credential Vault**: Optional encrypted storage for account credentials using Argon2id + AES-256
 - **Cross-Platform**: Full support for macOS and Linux
 - **XDG Compliant**: Configuration stored in `~/.config/velum/` following Linux standards
 - **Security Hardened**: TLS 1.2+ enforcement, credential cleanup, input validation
@@ -41,6 +42,12 @@ velum-vpn provides a unified command-line interface for connecting to multiple V
 - `iptables` or `nftables` - Firewall (for kill switch)
 - `iproute2` - Network utilities (`ip` command)
 - Kernel WireGuard module or `wireguard-go`
+
+### Optional (for Credential Vault)
+- `argon2` - Argon2 password hashing (for encrypted vault)
+  - Debian/Ubuntu: `sudo apt install argon2`
+  - macOS: `brew install argon2`
+- `xxd` - Hex encoding (usually pre-installed, part of `vim-common`)
 
 ## Installation
 
@@ -93,6 +100,7 @@ Commands:
   killswitch  Manage kill switch
   webrtc      Open browser for WebRTC leak test
   monitor     Background VPN health monitoring
+  credential  Manage encrypted credential vault
 
 Options:
   -h, --help     Show help
@@ -265,6 +273,46 @@ sudo velum monitor stop
 - Kill switch unexpectedly disabled (critical - audio alert)
 - Connection stale (no handshake for 3+ minutes)
 
+### `velum credential`
+
+Optional encrypted vault for storing account credentials at rest. This is an **opt-in** feature - by default, velum prompts for credentials each time and never stores them.
+
+```bash
+# Initialize vault (first-time setup)
+velum credential init
+
+# Store a credential
+velum credential store mullvad
+
+# Show vault status
+velum credential status
+
+# Remove a credential
+velum credential clear mullvad
+
+# Remove all credentials
+velum credential clear
+
+# Check for and clean up plaintext credentials
+velum credential migrate
+```
+
+**Security:**
+- Credentials encrypted with AES-256-CBC + HMAC-SHA256 (encrypt-then-MAC)
+- Key derived from vault password using Argon2id (64 MiB memory, 3 iterations)
+- Vault password required for **every** operation (never cached)
+- Salt stored separately in `~/.config/velum/vault/salt`
+
+**Workflow:**
+1. Run `velum credential init` to create the vault (one-time)
+2. Run `velum credential store <provider>` to store an account credential
+3. During `velum config` or `velum connect`, you'll be prompted to use vault credentials
+
+**Provider-specific validation:**
+- Mullvad: 16-digit account number
+- IVPN: Account ID format (i-XXXX-XXXX-XXXX or ivpn-XXXX-XXXX-XXXX)
+- PIA: Username format (pXXXXXXX)
+
 ## Configuration
 
 ### Configuration File
@@ -361,9 +409,16 @@ The WireGuard configuration includes DNS settings, and on macOS routes are added
 velum-vpn follows a **security-first** architecture designed for device capture scenarios:
 
 **No Plaintext Credential Storage:**
-- Account IDs (Mullvad, IVPN) are never stored on disk
+- Account IDs (Mullvad, IVPN) are never stored on disk by default
 - Session tokens stored in tmpfs only (cleared on reboot)
 - Legacy plaintext files are detected and securely deleted on first run
+
+**Optional Encrypted Vault:**
+- Opt-in encrypted storage for account credentials
+- AES-256-CBC with HMAC-SHA256 authenticated encryption
+- Argon2id key derivation (memory-hard, side-channel resistant)
+- Vault password required for every operation - never cached
+- Run `velum credential migrate` to detect and clean up any legacy plaintext credentials
 
 **Memory Protection:**
 - Credentials cleared from memory immediately after use (`unset`)
@@ -391,6 +446,7 @@ velum-vpn/
 │   ├── velum                     # Main CLI entry point
 │   ├── velum-config              # Configuration wizard
 │   ├── velum-connect             # VPN connection
+│   ├── velum-credential          # Encrypted vault management
 │   ├── velum-disconnect          # VPN disconnection
 │   ├── velum-killswitch          # Kill switch management
 │   ├── velum-monitor             # Background health monitor
@@ -402,6 +458,7 @@ velum-vpn/
 │   ├── velum-core.sh             # Core utilities, colors, logging
 │   ├── velum-security.sh         # Security utilities, validation
 │   ├── velum-credential.sh       # Credential/token management (tmpfs)
+│   ├── velum-vault.sh            # Encrypted vault (Argon2id + AES-256)
 │   ├── velum-jurisdiction.sh     # Privacy jurisdiction lookups
 │   ├── velum-detection.sh        # VPN detection checks
 │   ├── os/                       # OS abstraction layer
@@ -561,6 +618,31 @@ velum-vpn requires `XDG_RUNTIME_DIR` (tmpfs) for secure token storage. This is s
 - Non-systemd init systems (OpenRC, runit)
 - Minimal containers
 - Some BSD systems
+
+### Credential Vault Issues
+
+```bash
+# Check vault status
+velum credential status
+
+# If vault initialization fails, check argon2 is installed
+which argon2
+
+# Install argon2 if missing
+sudo apt install argon2      # Debian/Ubuntu
+brew install argon2          # macOS
+
+# Migrate plaintext credentials (if you have any legacy files)
+velum credential migrate
+```
+
+**Wrong vault password?**
+The vault password is verified during decryption. If you've forgotten it, you'll need to clear the vault and re-store your credentials:
+```bash
+velum credential clear       # Removes all encrypted credentials
+velum credential init        # Re-initialize with new password
+velum credential store mullvad
+```
 
 ### Permission Denied
 

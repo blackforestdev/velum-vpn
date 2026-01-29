@@ -111,8 +111,8 @@ provider_authenticate() {
     expiry=$(date --date="+24 hours" "+%a %b %d %T %Z %Y")
   fi
 
-  # Save token
-  save_token "$token" "$expiry"
+  # Save token to tmpfs (cleared on reboot for security)
+  save_token "$token" "$expiry" --runtime
 
   # Clean up credentials from memory
   unset username password
