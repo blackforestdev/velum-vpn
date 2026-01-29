@@ -1,8 +1,8 @@
 # Velum Credential Security Specification
 
-**Version:** 0.1.0-draft
+**Version:** 0.2.0
 **Date:** 2026-01-28
-**Status:** Design Phase - Living Document
+**Status:** Implemented (Phase 1-3 Complete)
 **Classification:** Security-Critical
 
 ---
@@ -158,9 +158,11 @@ User Flow (Default):
 
 **Storage locations (session-only):**
 ```
-/run/user/$UID/velum/           # tmpfs, cleared on reboot and on disconnect
+/run/user/$UID/velum/           # tmpfs, cleared on reboot
 ├── mullvad_token               # Access token only, no account ID
-└── ivpn_token
+├── ivpn_token
+├── pia_token
+└── wg_private_key              # WireGuard private key (regenerated each session)
 ```
 
 ### 4.2 Opt-In Mode: Encrypted Storage
@@ -168,25 +170,27 @@ User Flow (Default):
 **Principle:** User explicitly enables credential storage with encryption (opt-in only).
 
 ```bash
-velum credential store --encrypt
-# Prompts for storage passphrase
-# Stores encrypted credentials in ~/.config/velum/vault/
+velum credential init           # First-time vault setup
+velum credential store mullvad  # Store credential (prompts for vault password)
+velum credential store ivpn     # Store another credential
 ```
 
 **Encrypted storage structure:**
 ```
 ~/.config/velum/
 ├── vault/                      # Mode 700
-│   ├── credentials.enc         # AES-256-GCM encrypted blob
-│   └── salt                    # Argon2 salt for KDF
-└── vault.conf                  # Storage preferences (not encrypted)
+│   ├── credentials.enc         # AES-256-CBC encrypted JSON blob
+│   └── salt                    # Argon2 salt for KDF (hex-encoded)
+└── velum.conf                  # VPN preferences (no credentials)
 ```
 
 **Encryption scheme:**
 - KDF: Argon2id (memory-hard, resists GPU attacks)
-- Cipher: AES-256-GCM (authenticated encryption)
-- Key derivation: passphrase → Argon2id → 256-bit key
-- No key stored; derived from passphrase each time
+  - Memory: 64 MiB, Iterations: 3, Parallelism: 4
+  - Output: 64 bytes (32 for AES key, 32 for HMAC key)
+- Cipher: AES-256-CBC with HMAC-SHA256 (encrypt-then-MAC)
+- **Inline unlock model**: Vault password required for EVERY operation, never cached
+- No derived key stored anywhere (not even in tmpfs)
 
 ### 4.3 Alternative: External Credential Source (User's Choice)
 
@@ -330,7 +334,7 @@ declare -A CREDENTIALS=()  # Re-declare empty
 | SEC-03 | Credentials MUST be cleared from memory after use |
 | SEC-04 | Storage directories MUST have mode 700 |
 | SEC-05 | Credential files MUST have mode 600 |
-| SEC-06 | Encrypted storage MUST use authenticated encryption (AES-GCM) |
+| SEC-06 | Encrypted storage MUST use authenticated encryption (AES-256-CBC + HMAC-SHA256) |
 | SEC-07 | KDF MUST be memory-hard (Argon2id) |
 | SEC-08 | Credential operations MUST work correctly under sudo and target the real user context (SUDO_USER) |
 
@@ -345,21 +349,26 @@ declare -A CREDENTIALS=()  # Re-declare empty
 
 ### 6.3 Implementation Notes
 
-**Argon2id parameters (balance security vs. UX):**
+**Argon2id parameters:**
 ```bash
-# Recommended parameters for interactive use (tunable; stored with vault metadata):
-# - Memory: 64 MiB
-# - Iterations: 3
-# - Parallelism: 4
-# - Output: 32 bytes (256 bits)
+# Parameters used (stored with vault metadata):
+# - Memory: 64 MiB (-k 65536)
+# - Iterations: 3 (-t 3)
+# - Parallelism: 4 (-p 4)
+# - Output: 64 bytes (32 for AES key, 32 for HMAC key)
 ```
 
-**AES-256-GCM implementation:**
+**AES-256-CBC + HMAC-SHA256 implementation (encrypt-then-MAC):**
 ```bash
-# Use OpenSSL for encryption:
-# - Generate random 12-byte nonce for each encryption
-# - Prepend nonce to ciphertext
-# - Tag is appended automatically by OpenSSL
+# Encryption:
+# 1. Generate random 16-byte IV
+# 2. Encrypt plaintext with AES-256-CBC using first 32 bytes of derived key
+# 3. Compute HMAC-SHA256(IV || ciphertext) using second 32 bytes of derived key
+# 4. Store: IV, HMAC, ciphertext (all hex-encoded)
+
+# Decryption:
+# 1. Verify HMAC first (reject if mismatch = wrong password or tampering)
+# 2. Decrypt ciphertext with AES-256-CBC
 ```
 
 ---
@@ -409,25 +418,23 @@ velum credential migrate
 
 | File | Issue | Severity | Status |
 |------|-------|----------|--------|
-| `lib/providers/mullvad.sh` | Stores account ID in plaintext | CRITICAL | Open |
-| `lib/providers/ivpn.sh` | Stores account ID in plaintext | CRITICAL | Open |
-| `bin/velum-config` | Reads plaintext credentials | HIGH | Open |
-| `lib/velum-security.sh` | Token stored in plaintext | HIGH | Open |
-| `lib/velum-core.sh` | VELUM_TOKENS_DIR used for plaintext credentials (must route through credential API) | MEDIUM | Open |
+| `lib/providers/mullvad.sh` | Stores account ID in plaintext | CRITICAL | **Resolved** - No plaintext storage; vault opt-in |
+| `lib/providers/ivpn.sh` | Stores account ID in plaintext | CRITICAL | **Resolved** - No plaintext storage; vault opt-in |
+| `bin/velum-config` | Reads plaintext credentials | HIGH | **Resolved** - Uses vault API with inline unlock |
+| `lib/velum-security.sh` | Token stored in plaintext | HIGH | **Resolved** - Tokens in tmpfs only |
+| `lib/velum-core.sh` | VELUM_TOKENS_DIR used for plaintext credentials | MEDIUM | **Resolved** - Session material in VELUM_RUNTIME_DIR (tmpfs) |
 
-### 8.2 Files Requiring Changes
+### 8.2 Files Changed
 
-```
-lib/velum-credential.sh      # NEW: Credential management library
-lib/velum-vault.sh           # NEW: Encrypted storage implementation
-bin/velum-credential         # NEW: Credential CLI
-lib/providers/mullvad.sh     # MODIFY: Use credential API
-lib/providers/ivpn.sh        # MODIFY: Use credential API
-bin/velum-config             # MODIFY: Use credential API
-bin/velum-connect            # MODIFY: Use credential API
-lib/velum-security.sh        # MODIFY: Remove plaintext token functions
-lib/velum-core.sh            # MODIFY: Update paths for new storage
-```
+| File | Change | Status |
+|------|--------|--------|
+| `lib/velum-credential.sh` | NEW: Credential management library (tmpfs, migration) | Complete |
+| `lib/velum-vault.sh` | NEW: Encrypted storage (Argon2id + AES-256-CBC/HMAC-SHA256) | Complete |
+| `bin/velum-credential` | NEW: Credential CLI (init, store, clear, migrate) | Complete |
+| `lib/providers/pia.sh` | MODIFY: Tokens to tmpfs (`--runtime` flag) | Complete |
+| `bin/velum-config` | MODIFY: Vault integration for credential lookup | Complete |
+| `bin/velum-connect` | MODIFY: Vault integration, WG keys to tmpfs | Complete |
+| `lib/velum-security.sh` | MODIFY: Added credential_source validation | Complete |
 
 ---
 
@@ -448,17 +455,30 @@ echo -n "$passphrase" | argon2 "$salt" -id -t 3 -m 16 -p 4 -l 32 -r
 # -r     : Raw output (no encoding)
 ```
 
-### A.2 Encryption (AES-256-GCM)
+### A.2 Encryption (AES-256-CBC with HMAC-SHA256)
+
+**Note:** Changed from AES-256-GCM to AES-256-CBC with HMAC-SHA256 (encrypt-then-MAC) because OpenSSL's `enc` command doesn't support AEAD ciphers. The encrypt-then-MAC pattern provides equivalent authenticated encryption.
 
 ```bash
+# Key derivation produces 64 bytes (512 bits):
+# - First 32 bytes: AES-256 encryption key
+# - Second 32 bytes: HMAC-SHA256 authentication key
+
 # Encrypt:
-nonce=$(openssl rand 12)
-echo -n "$nonce" > output.enc
-echo -n "$plaintext" | openssl enc -aes-256-gcm -K "$key_hex" -iv "$nonce_hex" >> output.enc
+iv=$(openssl rand -hex 16)
+ciphertext=$(echo -n "$plaintext" | openssl enc -aes-256-cbc -K "$enc_key" -iv "$iv" | xxd -p | tr -d '\n')
+hmac=$(echo -n "${iv}${ciphertext}" | xxd -r -p | openssl dgst -sha256 -mac HMAC -macopt hexkey:"$mac_key" | awk '{print $2}')
+
+# Output format (credentials.enc):
+# Line 1: IV (hex)
+# Line 2: HMAC (hex)
+# Line 3: Ciphertext (hex)
 
 # Decrypt:
-nonce=$(head -c 12 input.enc)
-tail -c +13 input.enc | openssl enc -d -aes-256-gcm -K "$key_hex" -iv "$nonce_hex"
+# 1. Read IV, HMAC, ciphertext from file
+# 2. Verify HMAC: compute HMAC(IV || ciphertext), compare to stored HMAC
+# 3. If HMAC matches, decrypt ciphertext with AES-256-CBC
+# 4. If HMAC fails, reject (wrong password or tampering)
 ```
 
 ### A.3 Secure Random Generation
@@ -478,6 +498,7 @@ nonce=$(openssl rand 12)
 | Version | Date | Changes |
 |---------|------|---------|
 | 0.1.0-draft | 2026-01-28 | Initial specification |
+| 0.2.0 | 2026-01-28 | Implementation complete: Argon2id KDF, AES-256-CBC/HMAC-SHA256 encryption, inline unlock model, tmpfs session storage, vault CLI, migration tools. All audit findings resolved. |
 
 ---
 
