@@ -15,6 +15,7 @@ export VELUM_ROOT
 # Source libraries
 source "$VELUM_ROOT/lib/velum-core.sh"
 source "$VELUM_ROOT/lib/os/detect.sh"
+source "$VELUM_ROOT/lib/velum-credential.sh"
 
 # WireGuard config path
 WG_CONF_PATH="/etc/wireguard/velum.conf"
@@ -148,6 +149,9 @@ main() {
 
   # 6. Restore DNS
   restore_dns
+
+  # 7. Clear session tokens from tmpfs (per security spec)
+  credential_clear_all_tokens
 
   echo
   print_ok "VPN disconnected successfully!"

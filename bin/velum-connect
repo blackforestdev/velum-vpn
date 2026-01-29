@@ -15,6 +15,7 @@ export VELUM_ROOT
 # Source libraries
 source "$VELUM_ROOT/lib/velum-core.sh"
 source "$VELUM_ROOT/lib/velum-security.sh"
+source "$VELUM_ROOT/lib/velum-credential.sh"
 source "$VELUM_ROOT/lib/os/detect.sh"
 source "$VELUM_ROOT/lib/providers/provider-base.sh"
 
@@ -495,17 +496,44 @@ main() {
   # Load provider
   load_provider "${CONFIG[provider]}" || exit 1
 
-  # Determine provider-specific token file
-  local token_file="$VELUM_TOKEN_FILE"
-  case "${CONFIG[provider]}" in
-    mullvad) token_file="${VELUM_TOKENS_DIR}/mullvad_token" ;;
-    ivpn) token_file="${VELUM_TOKENS_DIR}/ivpn_token" ;;
-  esac
+  # Check token in tmpfs (session storage)
+  # Tokens are stored in /run/user/$UID/velum/ and cleared on reboot
+  if ! credential_check_token "${CONFIG[provider]}"; then
+    # Also check legacy disk location for backward compatibility
+    local legacy_token_file="$VELUM_TOKEN_FILE"
+    case "${CONFIG[provider]}" in
+      mullvad) legacy_token_file="${VELUM_TOKENS_DIR}/mullvad_token" ;;
+      ivpn) legacy_token_file="${VELUM_TOKENS_DIR}/ivpn_token" ;;
+    esac
 
-  # Check token (provider-specific)
-  if ! check_token_expiry "$token_file"; then
-    print_error "Authentication token expired. Run velum-config to re-authenticate."
-    exit 1
+    if [[ -f "$legacy_token_file" ]]; then
+      # Validate token file security before reading (spec requirement)
+      if ! validate_token_security "$legacy_token_file"; then
+        print_error "Legacy token file has insecure permissions."
+        print_error "Run 'velum config' to re-authenticate."
+        exit 1
+      fi
+
+      if check_token_expiry "$legacy_token_file" 2>/dev/null; then
+        print_warn "Found legacy token on disk. Migrating to secure session storage..."
+        print_info "Token will be moved to tmpfs and deleted from disk."
+
+        local token expiry
+        token=$(read_token "$legacy_token_file")
+        expiry=$(sed -n '2p' "$legacy_token_file" 2>/dev/null || echo "unknown")
+        credential_store_token "${CONFIG[provider]}" "$token" "$expiry"
+        secure_delete "$legacy_token_file"
+        print_ok "Token migrated to session storage."
+      else
+        print_error "Authentication token expired or not found."
+        print_error "Run 'velum config' to authenticate."
+        exit 1
+      fi
+    else
+      print_error "Authentication token not found."
+      print_error "Run 'velum config' to authenticate."
+      exit 1
+    fi
   fi
 
   # Server selection
@@ -525,16 +553,35 @@ main() {
   # Generate WireGuard keys
   generate_wg_keys
 
+  # Get account credential for providers that need it for WG key exchange
+  # Note: Only Mullvad requires account number for their legacy WG API
+  #       IVPN uses session token (already in tmpfs) for WG exchange
+  local account_credential=""
+
+  if [[ "${CONFIG[provider]}" == "mullvad" ]]; then
+    echo "Mullvad requires your account number for WireGuard key registration."
+    account_credential=$(ask_password "Account number (16 digits)")
+
+    if [[ -z "$account_credential" ]]; then
+      print_error "Account number is required for Mullvad WireGuard key exchange."
+      exit 1
+    fi
+  fi
+
   # Exchange keys with provider
   local wg_response
   wg_response=$(provider_wg_exchange \
     "${CONFIG[selected_ip]}" \
     "${CONFIG[selected_hostname]}" \
     "$WG_PUBLIC_KEY" \
-    "${CONFIG[dip_token]:-}") || {
+    "${CONFIG[dip_token]:-}" \
+    "$account_credential") || {
     print_error "WireGuard key exchange failed"
     exit 1
   }
+
+  # Clean up credential from memory
+  unset account_credential
 
   # Extract connection parameters
   local peer_ip server_key server_port dns_server

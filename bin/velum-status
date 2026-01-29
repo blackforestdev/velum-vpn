@@ -15,6 +15,7 @@ export VELUM_ROOT
 # Source libraries
 source "$VELUM_ROOT/lib/velum-core.sh"
 source "$VELUM_ROOT/lib/velum-security.sh"
+source "$VELUM_ROOT/lib/velum-credential.sh"
 source "$VELUM_ROOT/lib/os/detect.sh"
 
 # Configuration
@@ -32,13 +33,17 @@ load_status_config() {
   fi
 }
 
-# Get provider-specific token file
-get_token_file() {
-  case "${CONFIG[provider]:-}" in
-    mullvad) echo "${VELUM_TOKENS_DIR}/mullvad_token" ;;
-    ivpn) echo "${VELUM_TOKENS_DIR}/ivpn_token" ;;
-    *) echo "$VELUM_TOKEN_FILE" ;;
-  esac
+# Check token status using credential system (tmpfs)
+# Returns: 0 = valid, 1 = missing/expired, 2 = expiring soon
+check_provider_token() {
+  local provider="${CONFIG[provider]:-}"
+
+  if [[ -z "$provider" ]]; then
+    return 1
+  fi
+
+  # Use credential system for tmpfs-stored tokens
+  credential_check_token "$provider"
 }
 
 # ============================================================================
@@ -219,15 +224,22 @@ show_status() {
 
   echo
 
-  # Token status
+  # Token status (checks tmpfs storage)
   echo "Authentication:"
-  local token_file
-  token_file=$(get_token_file)
-  if check_token_expiry "$token_file" 2>/dev/null; then
-    echo "  Token:        ${C_GREEN}Valid${C_RESET}"
-  else
-    echo "  Token:        ${C_RED}Expired or missing${C_RESET}"
-  fi
+  local token_status
+  token_status=$(check_provider_token 2>/dev/null; echo $?)
+
+  case "$token_status" in
+    0)
+      echo "  Token:        ${C_GREEN}Valid${C_RESET}"
+      ;;
+    2)
+      echo "  Token:        ${C_YELLOW}Expiring soon${C_RESET}"
+      ;;
+    *)
+      echo "  Token:        ${C_RED}Expired or missing${C_RESET}"
+      ;;
+  esac
 
   echo
 }

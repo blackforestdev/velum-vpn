@@ -9,6 +9,7 @@ readonly _VELUM_PROVIDER_IVPN_LOADED=1
 # Source dependencies
 source "${BASH_SOURCE%/*}/../velum-core.sh"
 source "${BASH_SOURCE%/*}/../velum-security.sh"
+source "${BASH_SOURCE%/*}/../velum-credential.sh"
 
 # ============================================================================
 # CONSTANTS
@@ -124,45 +125,24 @@ provider_authenticate() {
     expiry="unknown"
   fi
 
-  # Save session token
-  save_token "$session_token" "$expiry" "${VELUM_TOKENS_DIR}/ivpn_token"
+  # Save session token to tmpfs (session storage, cleared on reboot)
+  # SECURITY: Account ID is NOT stored - user will be prompted on token refresh
+  credential_store_token "ivpn" "$session_token" "$expiry"
 
-  # Store account ID for later use
-  init_config_dirs
-  (
-    umask 077
-    echo "$account_id" > "${VELUM_TOKENS_DIR}/ivpn_account"
-  )
-  chmod 600 "${VELUM_TOKENS_DIR}/ivpn_account"
-
-  # Fix ownership if running as root via sudo
-  if [[ -n "${SUDO_USER:-}" ]] && _validate_username "$SUDO_USER"; then
-    local sudo_uid sudo_gid
-    sudo_uid=$(id -u "$SUDO_USER" 2>/dev/null)
-    sudo_gid=$(id -g "$SUDO_USER" 2>/dev/null)
-    if [[ -n "$sudo_uid" && -n "$sudo_gid" ]]; then
-      chown "$sudo_uid:$sudo_gid" "${VELUM_TOKENS_DIR}/ivpn_account"
-      chown "$sudo_uid:$sudo_gid" "${VELUM_TOKENS_DIR}/ivpn_token"
-    fi
-  fi
-
-  # Clean up
+  # Clean up account ID from memory
   unset account_id
 
   echo "{\"access_token\": \"$session_token\", \"expires_at\": \"$expiry\"}"
 }
 
-# Get stored session token
+# Get stored session token from tmpfs
 _get_ivpn_token() {
-  local token_file="${VELUM_TOKENS_DIR}/ivpn_token"
-  [[ -f "$token_file" ]] && sed -n '1p' "$token_file" 2>/dev/null
+  credential_get_token "ivpn"
 }
 
-# Get stored account ID
-_get_ivpn_account() {
-  local account_file="${VELUM_TOKENS_DIR}/ivpn_account"
-  [[ -f "$account_file" ]] && cat "$account_file" 2>/dev/null
-}
+# NOTE: Account IDs are no longer stored on disk.
+# Users are prompted for account ID when token refresh is needed.
+# This is a security feature to prevent credential theft if device is captured.
 
 # ============================================================================
 # SERVER LIST
@@ -322,12 +302,16 @@ provider_wg_exchange() {
 
   # Get server public key from server list
   local servers
-  servers=$(provider_get_servers)
+  if ! servers=$(provider_get_servers); then
+    log_error "Failed to get server list for public key lookup"
+    return 1
+  fi
+
   local server_key
-  server_key=$(echo "$servers" | jq -r --arg h "$hostname" \
+  server_key=$(printf '%s' "$servers" | jq -r --arg h "$hostname" \
     '.wireguard[] | .hosts[] | select(.hostname == $h) | .public_key // empty')
 
-  if [[ -z "$server_key" ]]; then
+  if [[ -z "$server_key" || "$server_key" == "null" ]]; then
     log_error "Could not find server public key for $hostname"
     return 1
   fi
@@ -464,6 +448,7 @@ ivpn_logout() {
     -d "{\"session_token\": \"$session_token\"}" \
     "${IVPN_API_BASE}/v4/session/delete" >/dev/null
 
-  rm -f "${VELUM_TOKENS_DIR}/ivpn_token" "${VELUM_TOKENS_DIR}/ivpn_account"
+  # Clear token from tmpfs
+  credential_clear_token "ivpn"
   log_info "IVPN session deleted"
 }

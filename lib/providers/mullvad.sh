@@ -9,6 +9,7 @@ readonly _VELUM_PROVIDER_MULLVAD_LOADED=1
 # Source dependencies
 source "${BASH_SOURCE%/*}/../velum-core.sh"
 source "${BASH_SOURCE%/*}/../velum-security.sh"
+source "${BASH_SOURCE%/*}/../velum-credential.sh"
 
 # ============================================================================
 # CONSTANTS
@@ -94,44 +95,24 @@ provider_authenticate() {
   local expiry
   expiry=$(echo "$response" | jq -r '.expiry // empty')
 
-  # Save token (Mullvad tokens are longer-lived than PIA)
-  save_token "$access_token" "$expiry" "${VELUM_TOKENS_DIR}/mullvad_token"
+  # Save token to tmpfs (session storage, cleared on reboot)
+  # SECURITY: Account number is NOT stored - user will be prompted on token refresh
+  credential_store_token "mullvad" "$access_token" "$expiry"
 
-  # Store account number for WireGuard key operations
-  init_config_dirs
-  (
-    umask 077
-    echo "$account_number" > "${VELUM_TOKENS_DIR}/mullvad_account"
-  )
-  chmod 600 "${VELUM_TOKENS_DIR}/mullvad_account"
-
-  # Fix ownership if running as root via sudo
-  if [[ -n "${SUDO_USER:-}" ]] && _validate_username "$SUDO_USER"; then
-    local sudo_uid sudo_gid
-    sudo_uid=$(id -u "$SUDO_USER" 2>/dev/null)
-    sudo_gid=$(id -g "$SUDO_USER" 2>/dev/null)
-    if [[ -n "$sudo_uid" && -n "$sudo_gid" ]]; then
-      chown "$sudo_uid:$sudo_gid" "${VELUM_TOKENS_DIR}/mullvad_account"
-    fi
-  fi
-
-  # Clean up
+  # Clean up account number from memory
   unset account_number
 
   echo "{\"access_token\": \"$access_token\", \"expires_at\": \"$expiry\"}"
 }
 
-# Get stored access token
+# Get stored access token from tmpfs
 _get_mullvad_token() {
-  local token_file="${VELUM_TOKENS_DIR}/mullvad_token"
-  [[ -f "$token_file" ]] && sed -n '1p' "$token_file" 2>/dev/null
+  credential_get_token "mullvad"
 }
 
-# Get stored account number
-_get_mullvad_account() {
-  local account_file="${VELUM_TOKENS_DIR}/mullvad_account"
-  [[ -f "$account_file" ]] && cat "$account_file" 2>/dev/null
-}
+# NOTE: Account numbers are no longer stored on disk.
+# Users are prompted for account number when token refresh is needed.
+# This is a security feature to prevent credential theft if device is captured.
 
 # ============================================================================
 # SERVER LIST
@@ -156,10 +137,16 @@ provider_get_servers() {
   log_info "Fetching Mullvad server list..."
 
   local response
-  response=$(curl -s --tlsv1.2 "$MULLVAD_SERVERS_URL")
+  response=$(curl -s --tlsv1.2 --connect-timeout 10 --max-time 30 "$MULLVAD_SERVERS_URL")
 
-  if [[ -z "$response" ]] || ! echo "$response" | jq -e '.[0].hostname' >/dev/null 2>&1; then
-    log_error "Failed to fetch server list"
+  if [[ -z "$response" ]]; then
+    log_error "Failed to fetch server list: empty response"
+    return 1
+  fi
+
+  # Validate JSON structure
+  if ! printf '%s' "$response" | jq -e '.[0].hostname' >/dev/null 2>&1; then
+    log_error "Failed to parse server list"
     return 1
   fi
 
@@ -248,20 +235,30 @@ provider_test_latency() {
 
 # Exchange WireGuard keys with Mullvad
 # Uses the legacy API which is simpler (no device management needed)
-# Usage: provider_wg_exchange "server_ip" "hostname" "public_key"
+# Usage: provider_wg_exchange "server_ip" "hostname" "public_key" "dip_token" "account_number"
+# Note: account_number is required for Mullvad's WG key registration API
+# IMPORTANT: This function must only output JSON to stdout (no print_info/echo)
 provider_wg_exchange() {
   local server_ip="$1"
   local hostname="$2"
   local public_key="$3"
-  local _dip_unused="$4"  # Mullvad doesn't support DIP
+  local _dip_unused="${4:-}"  # Mullvad doesn't support DIP
+  local account_number="${5:-}"  # Account number passed from caller
 
-  local account_number
-  account_number=$(_get_mullvad_account)
-
+  # Account number is required for WG key registration
   if [[ -z "$account_number" ]]; then
-    log_error "No Mullvad account number found. Please authenticate first."
+    log_error "Account number is required for WireGuard key exchange."
+    log_error "Caller must provide account number as 5th parameter."
     return 1
   fi
+
+  # Validate format
+  if ! provider_validate_creds "$account_number"; then
+    return 1
+  fi
+
+  # Mark for cleanup
+  mark_sensitive account_number
 
   log_info "Registering WireGuard key with Mullvad..."
 
@@ -281,19 +278,38 @@ provider_wg_exchange() {
 
     # Get server public key from server list
     local servers
-    servers=$(provider_get_servers)
-    local server_key
-    server_key=$(echo "$servers" | jq -r --arg h "$hostname" \
-      '.[] | select(.hostname == $h) | .pubkey // empty')
-
-    if [[ -z "$server_key" ]]; then
-      log_error "Could not find server public key for $hostname"
+    if ! servers=$(provider_get_servers); then
+      log_error "Failed to get server list for public key lookup"
+      unset account_number
       return 1
     fi
+
+    # Get server public key from server list
+    local server_key
+    server_key=$(printf '%s' "$servers" | jq -r --arg h "$hostname" \
+      '.[] | select(.hostname == $h) | .pubkey // empty')
+
+    if [[ -z "$server_key" || "$server_key" == "null" ]]; then
+      log_error "Could not find server public key for $hostname"
+      unset account_number
+      return 1
+    fi
+
+    if [[ -z "$server_key" || "$server_key" == "null" ]]; then
+      log_error "Could not find server public key for $hostname"
+      unset account_number
+      return 1
+    fi
+
+    # Clean up account number from memory
+    unset account_number
 
     # Build response in PIA-compatible format
     echo "{\"status\": \"OK\", \"peer_ip\": \"$peer_ip\", \"server_key\": \"$server_key\", \"server_port\": $MULLVAD_WG_PORT, \"dns_servers\": [\"10.64.0.1\"]}"
   else
+    # Clean up account number from memory
+    unset account_number
+
     # Error response
     local error_msg
     error_msg=$(echo "$response" | jq -r '.error // .message // empty' 2>/dev/null || echo "$response")

@@ -21,6 +21,7 @@ export VELUM_ROOT
 # Source libraries
 source "$VELUM_ROOT/lib/velum-core.sh"
 source "$VELUM_ROOT/lib/velum-security.sh"
+source "$VELUM_ROOT/lib/velum-credential.sh"
 source "$VELUM_ROOT/lib/velum-jurisdiction.sh"
 source "$VELUM_ROOT/lib/velum-detection.sh"
 source "$VELUM_ROOT/lib/os/detect.sh"
@@ -200,23 +201,35 @@ phase_authentication() {
   local auth_type
   auth_type=$(provider_auth_type)
 
-  # Determine provider-specific token file
-  local token_file="$VELUM_TOKEN_FILE"
-  case "${CONFIG[provider]}" in
-    mullvad) token_file="${VELUM_TOKENS_DIR}/mullvad_token" ;;
-    ivpn) token_file="${VELUM_TOKENS_DIR}/ivpn_token" ;;
-  esac
-
-  # Check for existing token (provider-specific)
-  if check_token_expiry "$token_file"; then
+  # Check for existing token in tmpfs (session storage)
+  local token_status
+  if credential_check_token "${CONFIG[provider]}"; then
     local token
-    token=$(read_token "$token_file")
+    token=$(credential_get_token "${CONFIG[provider]}")
     if [[ -n "$token" ]]; then
-      print_ok "Valid authentication token found."
+      print_ok "Valid session token found (stored in RAM)."
       CONFIG[token]="$token"
 
       if ! ask_yn "Use existing token?" "y"; then
         CONFIG[token]=""
+      fi
+    fi
+  fi
+
+  # Also check legacy disk location for PIA (backward compat)
+  if [[ -z "${CONFIG[token]}" && "${CONFIG[provider]}" == "pia" ]]; then
+    local legacy_token_file="$VELUM_TOKEN_FILE"
+    if check_token_expiry "$legacy_token_file" 2>/dev/null; then
+      local token
+      token=$(read_token "$legacy_token_file")
+      if [[ -n "$token" ]]; then
+        print_ok "Valid authentication token found (legacy storage)."
+        print_info "Token will be migrated to session storage on next auth."
+        CONFIG[token]="$token"
+
+        if ! ask_yn "Use existing token?" "y"; then
+          CONFIG[token]=""
+        fi
       fi
     fi
   fi
@@ -1006,6 +1019,12 @@ main() {
 
   # Migrate from legacy location if needed
   migrate_legacy_config
+
+  # Check for and offer to clean up plaintext credentials (security)
+  migrate_plaintext_credentials
+
+  # Migrate tokens from disk to tmpfs if needed
+  migrate_tokens_to_runtime
 
   # Check requirements
   check_os_requirements || exit 1

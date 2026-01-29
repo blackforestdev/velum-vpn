@@ -299,16 +299,30 @@ CONFIG[selected_hostname]=""
 
 ### Token Storage
 
-Authentication tokens are stored in `~/.config/velum/tokens/` with mode 600.
+**Session tokens** are stored in tmpfs (RAM-backed filesystem) for security:
+- Location: `/run/user/$UID/velum/` (Linux with systemd)
+- Tokens are automatically cleared on system reboot
+- No persistent credential storage by default
+
+**Requirements:**
+- `XDG_RUNTIME_DIR` must be available (standard on systemd-based Linux)
+- If unavailable, token storage will fail (fail-closed for security)
+
+**Note:** Account credentials (Mullvad account number, IVPN account ID) are **never** stored on disk. You will be prompted for your account credential when:
+- Authenticating during `velum config`
+- Connecting with `velum connect` (Mullvad only, for WireGuard key registration)
 
 ### Environment Variables
 
 | Variable | Description | Default |
 |----------|-------------|---------|
 | `XDG_CONFIG_HOME` | Base config directory | `~/.config` |
-| `VELUM_LOG_LEVEL` | Log verbosity (0-3) | `1` (INFO) |
+| `XDG_RUNTIME_DIR` | Tmpfs directory for session tokens | `/run/user/$UID` (systemd) |
+| `VELUM_LOG_LEVEL` | Log verbosity (0=DEBUG, 1=INFO, 2=WARN, 3=ERROR) | `1` (INFO) |
 | `VELUM_RUN_DIR` | Runtime directory (pid, state, logs) | `/run/velum` (Linux), `/var/run/velum` (macOS) |
 | `VELUM_LIB_DIR` | Persistent state (DNS backups) | `/var/lib/velum` |
+
+**Note:** `XDG_RUNTIME_DIR` is required for session token storage. If not available, velum will fail-closed (refuse to store tokens) rather than fall back to disk storage.
 
 ## Security Features
 
@@ -344,11 +358,30 @@ The WireGuard configuration includes DNS settings, and on macOS routes are added
 
 ### Credential Security
 
-- Credentials are marked for cleanup and cleared from memory after authentication
-- Tokens are stored with mode 600 (owner read/write only)
+velum-vpn follows a **security-first** architecture designed for device capture scenarios:
+
+**No Plaintext Credential Storage:**
+- Account IDs (Mullvad, IVPN) are never stored on disk
+- Session tokens stored in tmpfs only (cleared on reboot)
+- Legacy plaintext files are detected and securely deleted on first run
+
+**Memory Protection:**
+- Credentials cleared from memory immediately after use (`unset`)
+- Sensitive variables marked for cleanup on script exit
+
+**File Security:**
+- Token files validated for permissions (600) and ownership before reading
 - Config directories use mode 700
-- TLS 1.2+ is enforced for all API calls
-- A "dead-man switch" checks scripts for insecure patterns before execution
+- Files with insecure permissions are rejected
+
+**Network Security:**
+- TLS 1.2+ enforced for all API calls
+- Provider CA certificates pinned where available
+
+**Defensive Measures:**
+- "Dead-man switch" checks scripts for insecure patterns before execution
+- Input validation on all user-provided values (SUDO_USER, IPs, ports)
+- Fail-closed behavior when security requirements aren't met
 
 ## Architecture
 
@@ -368,6 +401,9 @@ velum-vpn/
 ├── lib/                          # Libraries
 │   ├── velum-core.sh             # Core utilities, colors, logging
 │   ├── velum-security.sh         # Security utilities, validation
+│   ├── velum-credential.sh       # Credential/token management (tmpfs)
+│   ├── velum-jurisdiction.sh     # Privacy jurisdiction lookups
+│   ├── velum-detection.sh        # VPN detection checks
 │   ├── os/                       # OS abstraction layer
 │   │   ├── detect.sh             # OS detection and loader
 │   │   ├── macos.sh              # macOS implementation
@@ -496,13 +532,35 @@ sudo nft list table inet velum_killswitch
 sudo velum killswitch disable
 ```
 
-### Token Expired
+### Token Expired or Missing
+
+Session tokens are stored in tmpfs and cleared on reboot. After a reboot:
 
 ```bash
-# Re-authenticate
+# Re-authenticate (you'll need your account credentials)
 velum config
 # Follow prompts, existing config will be preserved
 ```
+
+For Mullvad, you'll also be prompted for your account number during `velum connect` (required for WireGuard key registration).
+
+### Session Token Storage Failed
+
+If you see "Cannot create runtime directory" or similar errors:
+
+```bash
+# Check if XDG_RUNTIME_DIR is available
+echo $XDG_RUNTIME_DIR
+ls -la /run/user/$(id -u)
+
+# On non-systemd systems, you may need to create the directory manually
+# or use a systemd-based distribution
+```
+
+velum-vpn requires `XDG_RUNTIME_DIR` (tmpfs) for secure token storage. This is standard on systemd-based Linux distributions but may not be available on:
+- Non-systemd init systems (OpenRC, runit)
+- Minimal containers
+- Some BSD systems
 
 ### Permission Denied
 

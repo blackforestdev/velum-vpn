@@ -251,7 +251,7 @@ migrate_legacy_config() {
     migrated=true
   fi
 
-  # Migrate Mullvad token/account
+  # Migrate Mullvad token (account files are NOT migrated for security)
   if [[ -f "$legacy_dir/mullvad_token" && ! -f "$VELUM_TOKENS_DIR/mullvad_token" ]]; then
     log_info "Migrating Mullvad token..."
     cp "$legacy_dir/mullvad_token" "$VELUM_TOKENS_DIR/mullvad_token"
@@ -259,11 +259,11 @@ migrate_legacy_config() {
     migrated=true
   fi
 
-  if [[ -f "$legacy_dir/mullvad_account" && ! -f "$VELUM_TOKENS_DIR/mullvad_account" ]]; then
-    log_info "Migrating Mullvad account..."
-    cp "$legacy_dir/mullvad_account" "$VELUM_TOKENS_DIR/mullvad_account"
-    chmod 600 "$VELUM_TOKENS_DIR/mullvad_account"
-    migrated=true
+  # SECURITY: Do NOT migrate plaintext account files
+  # Plaintext account storage has been removed for security
+  if [[ -f "$legacy_dir/mullvad_account" ]]; then
+    log_warn "Legacy plaintext credential found: $legacy_dir/mullvad_account"
+    log_warn "This file should be securely deleted. Run 'velum credential migrate' for secure cleanup."
   fi
 
   # Fix ownership if running as root via sudo

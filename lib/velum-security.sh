@@ -9,6 +9,13 @@ readonly _VELUM_SECURITY_LOADED=1
 # Source core if not already loaded
 source "${BASH_SOURCE%/*}/velum-core.sh"
 
+# Source credential management for tmpfs storage (lazy load to avoid circular dep)
+_load_credential_lib() {
+  if [[ -z "${_VELUM_CREDENTIAL_LOADED:-}" ]]; then
+    source "${BASH_SOURCE%/*}/velum-credential.sh"
+  fi
+}
+
 # ============================================================================
 # SECURE CURL
 # ============================================================================
@@ -427,11 +434,31 @@ read_token() {
 }
 
 # Save token to file with expiry
+# Usage: save_token "token" "expiry" [token_file] [--runtime]
+# --runtime: Use tmpfs storage (cleared on reboot, more secure)
 save_token() {
   local token="$1"
   local expiry="$2"
   local token_file="${3:-$VELUM_TOKEN_FILE}"
+  local use_runtime=false
 
+  # Check for --runtime flag
+  if [[ "${4:-}" == "--runtime" ]] || [[ "$token_file" == "--runtime" ]]; then
+    use_runtime=true
+    # If token_file was --runtime, use default
+    [[ "$token_file" == "--runtime" ]] && token_file="$VELUM_TOKEN_FILE"
+  fi
+
+  if [[ "$use_runtime" == true ]]; then
+    # Use tmpfs storage via credential library
+    _load_credential_lib
+    local provider
+    provider=$(basename "$token_file" _token)
+    credential_store_token "$provider" "$token" "$expiry"
+    return $?
+  fi
+
+  # Legacy disk storage (for backward compatibility)
   # Initialize config directories (creates VELUM_TOKENS_DIR with proper perms)
   init_config_dirs
 
@@ -527,6 +554,109 @@ check_file_perms() {
   local group=$(((perms / 10) % 10))
 
   [[ "$other" -eq 0 ]] && [[ "$group" -eq 0 ]]
+}
+
+# Comprehensive file security check
+# Validates permissions AND ownership before reading sensitive files
+# Usage: validate_file_security "/path/to/file" [required_mode] [severity]
+#   required_mode: "600" (default), "400", "700", etc.
+#   severity: "error" (default, returns 1), "warn" (logs warning, returns 0)
+# Returns: 0 = secure, 1 = insecure
+validate_file_security() {
+  local file="$1"
+  local required_mode="${2:-600}"
+  local severity="${3:-error}"
+
+  if [[ ! -f "$file" ]]; then
+    return 0  # Non-existent file is not an error
+  fi
+
+  local issues=()
+
+  # Get file permissions
+  local perms
+  if [[ "$(uname)" == "Darwin" ]]; then
+    perms=$(stat -f "%Lp" "$file" 2>/dev/null)
+  else
+    perms=$(stat -c "%a" "$file" 2>/dev/null)
+  fi
+
+  # Check permissions match required mode or are more restrictive
+  # Accept 600, 400 for files that should be 600
+  local other=$((perms % 10))
+  local group=$(((perms / 10) % 10))
+
+  if [[ "$other" -ne 0 ]] || [[ "$group" -ne 0 ]]; then
+    issues+=("insecure permissions: $perms (should be $required_mode or more restrictive)")
+  fi
+
+  # Check ownership
+  local owner expected_owner
+  if [[ "$(uname)" == "Darwin" ]]; then
+    owner=$(stat -f "%Su" "$file" 2>/dev/null)
+  else
+    owner=$(stat -c "%U" "$file" 2>/dev/null)
+  fi
+
+  expected_owner="${SUDO_USER:-$USER}"
+
+  # Allow root ownership for system files
+  if [[ "$owner" != "$expected_owner" && "$owner" != "root" ]]; then
+    issues+=("unexpected owner: $owner (expected: $expected_owner)")
+  fi
+
+  # Report issues
+  if [[ ${#issues[@]} -gt 0 ]]; then
+    local msg="Security issue with $file: ${issues[*]}"
+    if [[ "$severity" == "error" ]]; then
+      log_error "$msg"
+      return 1
+    else
+      log_warn "$msg"
+      return 0  # Warning only - don't fail
+    fi
+  fi
+
+  return 0
+}
+
+# Validate config file before loading
+# Usage: validate_config_security "/path/to/config"
+# Returns: 0 = safe to load, 1 = refuse to load
+validate_config_security() {
+  local config_file="$1"
+
+  if [[ ! -f "$config_file" ]]; then
+    return 0
+  fi
+
+  # Config files should be 600 or 400, warn but don't fail for slightly loose perms
+  if ! validate_file_security "$config_file" "600" "warn"; then
+    # Already logged warning
+    :
+  fi
+
+  return 0  # Always allow config loading (it's user data, not secrets)
+}
+
+# Validate token file before loading
+# Usage: validate_token_security "/path/to/token"
+# Returns: 0 = safe to load, 1 = refuse to load
+validate_token_security() {
+  local token_file="$1"
+
+  if [[ ! -f "$token_file" ]]; then
+    return 0
+  fi
+
+  # Token files are sensitive - fail if insecure
+  if ! validate_file_security "$token_file" "600" "error"; then
+    log_error "Refusing to read token with insecure permissions."
+    log_error "Fix with: chmod 600 $token_file"
+    return 1
+  fi
+
+  return 0
 }
 
 # ============================================================================
