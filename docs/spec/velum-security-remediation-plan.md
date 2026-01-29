@@ -1,6 +1,6 @@
 # Velum Security Remediation Plan
 
-**Version:** 0.1.0
+**Version:** 0.3.0
 **Date:** 2026-01-28
 **Status:** Active
 **Audit Date:** 2026-01-28
@@ -44,17 +44,17 @@ unset 'CONFIG[username]' 'CONFIG[password]'
 ```
 
 **Steps:**
-1. [ ] Replace all `CONFIG[credential]=""` with `unset 'CONFIG[credential]'`
-2. [ ] Add `mark_sensitive CONFIG[username] CONFIG[password]` immediately after assignment
-3. [ ] Verify cleanup function calls `unset` on all marked variables
-4. [ ] Add trap handler to cleanup on script exit/error
+1. [x] Replace all `CONFIG[credential]=""` with `unset 'CONFIG[credential]'`
+2. [x] Add `mark_sensitive CONFIG[username] CONFIG[password]` immediately after assignment
+3. [x] Verify cleanup function calls `unset` on all marked variables
+4. [x] Add trap handler to cleanup on script exit/error
 
 **Acceptance Criteria:**
-- [ ] No credential variables remain in memory after authentication phase
-- [ ] `declare -p CONFIG` after auth shows no username/password keys
-- [ ] Cleanup runs on both success and error paths
+- [x] No credential variables remain in memory after authentication phase
+- [x] `declare -p CONFIG` after auth shows no username/password keys
+- [x] Cleanup runs on both success and error paths
 
-**Status:** [ ] Not Started / [ ] In Progress / [ ] Complete
+**Status:** [x] Complete
 
 ---
 
@@ -82,17 +82,17 @@ route -q -n add -host "$dns_server" -interface %i
 ```
 
 **Steps:**
-1. [ ] Quote all variable expansions in `bin/velum-connect` PostUp/PostDown
-2. [ ] Quote all variable expansions in `lib/os/linux.sh` iptables commands
-3. [ ] Add shellcheck directive `# shellcheck disable=SC2086` only where intentional word splitting needed
-4. [ ] Run `shellcheck` on all modified files
+1. [x] Quote all variable expansions in `bin/velum-connect` PostUp/PostDown
+2. [x] Quote all variable expansions in `lib/os/linux.sh` iptables commands
+3. [x] Add shellcheck directive `# shellcheck disable=SC2086` only where intentional word splitting needed
+4. [x] Run `shellcheck` on all modified files
 
 **Acceptance Criteria:**
-- [ ] `shellcheck bin/velum-connect lib/os/linux.sh` reports no SC2086 warnings
-- [ ] Variables containing spaces/special chars don't break commands
-- [ ] Validation still catches malformed input before it reaches commands
+- [x] `shellcheck bin/velum-connect lib/os/linux.sh` reports no SC2086 warnings
+- [x] Variables containing spaces/special chars don't break commands
+- [x] Validation still catches malformed input before it reaches commands
 
-**Status:** [ ] Not Started / [ ] In Progress / [ ] Complete
+**Status:** [x] Complete
 
 ---
 
@@ -130,17 +130,17 @@ fi
 ```
 
 **Steps:**
-1. [ ] Add `_validate_username()` function to `lib/velum-core.sh`
-2. [ ] Validate `SUDO_USER` before any use in path construction
-3. [ ] Validate before `chown` operations
-4. [ ] Fail closed if validation fails
+1. [x] Add `_validate_username()` function to `lib/velum-core.sh`
+2. [x] Validate `SUDO_USER` before any use in path construction
+3. [x] Validate before `chown` operations
+4. [x] Fail closed if validation fails
 
 **Acceptance Criteria:**
-- [ ] `SUDO_USER='../../../etc'` does not create path traversal
-- [ ] `SUDO_USER='$(whoami)'` does not execute command
-- [ ] Invalid usernames cause hard failure, not silent fallback
+- [x] `SUDO_USER='../../../etc'` does not create path traversal
+- [x] `SUDO_USER='$(whoami)'` does not execute command
+- [x] Invalid usernames cause hard failure, not silent fallback
 
-**Status:** [ ] Not Started / [ ] In Progress / [ ] Complete
+**Status:** [x] Complete
 
 ---
 
@@ -164,19 +164,19 @@ fi
 3. **Store** only short-lived tokens (in tmpfs when available)
 
 **Steps:**
-1. [ ] Remove account ID write operations from provider modules
-2. [ ] Modify `provider_authenticate()` to accept account ID as parameter only
-3. [ ] Update `bin/velum-config` to not persist account ID
-4. [ ] Implement tmpfs token storage at `/run/user/$UID/velum/`
-5. [ ] Add migration to securely delete existing plaintext account files
-6. [ ] Update documentation
+1. [x] Remove account ID write operations from provider modules
+2. [x] Modify `provider_authenticate()` to accept account ID as parameter only
+3. [x] Update `bin/velum-config` to not persist account ID
+4. [x] Implement tmpfs token storage at `/run/user/$UID/velum/`
+5. [x] Add migration to securely delete existing plaintext account files
+6. [x] Update documentation
 
 **Acceptance Criteria:**
-- [ ] `find ~/.config/velum -name '*_account'` returns nothing
-- [ ] Token refresh prompts for account ID (or uses vault if configured)
-- [ ] Tokens stored in tmpfs are cleared on reboot
+- [x] `find ~/.config/velum -name '*_account'` returns nothing
+- [x] Token refresh prompts for account ID (or uses vault if configured)
+- [x] Tokens stored in tmpfs are cleared on reboot
 
-**Status:** [ ] Not Started / [ ] In Progress / [ ] Complete
+**Status:** [x] Complete
 
 ---
 
@@ -209,18 +209,18 @@ chmod 700 "$VELUM_RUNTIME_DIR"
 ```
 
 **Steps:**
-1. [ ] Create `lib/velum-credential.sh` with runtime dir detection
-2. [ ] Implement `credential_store_token()` for tmpfs storage
-3. [ ] Implement `credential_get_token()` for retrieval
-4. [ ] Update provider modules to use new API
-5. [ ] Test on systems without XDG_RUNTIME_DIR
+1. [x] Create `lib/velum-credential.sh` with runtime dir detection
+2. [x] Implement `credential_store_token()` for tmpfs storage
+3. [x] Implement `credential_get_token()` for retrieval
+4. [x] Update provider modules to use new API
+5. [x] Test on systems without XDG_RUNTIME_DIR
 
 **Acceptance Criteria:**
-- [ ] Tokens stored in `/run/user/$UID/velum/` on Linux
-- [ ] Tokens cleared automatically on reboot
-- [ ] Fallback works on minimal systems
+- [x] Tokens stored in `/run/user/$UID/velum/` on Linux
+- [x] Tokens cleared automatically on reboot
+- [x] Fallback works on minimal systems (fail-closed, no /tmp fallback)
 
-**Status:** [ ] Not Started / [ ] In Progress / [ ] Complete
+**Status:** [x] Complete
 
 ---
 
@@ -268,18 +268,18 @@ _check_file_security() {
 ```
 
 **Steps:**
-1. [ ] Add `_check_file_security()` to `lib/velum-security.sh`
-2. [ ] Call before loading config file
-3. [ ] Call before reading credential files
-4. [ ] Call before reading token files
-5. [ ] Warn but continue for non-critical files; fail for credentials
+1. [x] Add `_check_file_security()` to `lib/velum-security.sh`
+2. [x] Call before loading config file
+3. [x] Call before reading credential files
+4. [x] Call before reading token files
+5. [x] Warn but continue for non-critical files; fail for credentials
 
 **Acceptance Criteria:**
-- [ ] Config file with 644 perms triggers warning
-- [ ] Token file with 644 perms triggers error
-- [ ] Files owned by other users trigger error
+- [x] Config file with 644 perms triggers warning
+- [x] Token file with 644 perms triggers error
+- [x] Files owned by other users trigger error
 
-**Status:** [ ] Not Started / [ ] In Progress / [ ] Complete
+**Status:** [x] Complete
 
 ---
 
@@ -307,74 +307,59 @@ _derive_key() {
 ```
 
 **Steps:**
-1. [ ] Add argon2 to dependency check
-2. [ ] Implement `_derive_key()` function
-3. [ ] Implement salt generation and storage
-4. [ ] Test key derivation consistency across platforms
+1. [x] Add argon2 to dependency check
+2. [x] Implement `vault_derive_key()` function
+3. [x] Implement salt generation and storage
+4. [x] Test key derivation consistency across platforms
 
 **Acceptance Criteria:**
-- [ ] Same passphrase + salt produces same key
-- [ ] Different salts produce different keys
-- [ ] Key derivation completes in < 3 seconds on target hardware
+- [x] Same passphrase + salt produces same key
+- [x] Different salts produce different keys
+- [x] Key derivation completes in < 3 seconds on target hardware
 
-**Status:** [ ] Not Started / [ ] In Progress / [ ] Complete
+**Status:** [x] Complete
 
 ---
 
-### 3.2 Implement AES-256-GCM Encryption
+### 3.2 Implement AES-256-CBC with HMAC-SHA256 Encryption
 
 **Severity:** N/A (new feature)
 **Purpose:** Encrypt credentials at rest
 
+**Note:** Changed from AES-256-GCM to AES-256-CBC with HMAC-SHA256 (encrypt-then-MAC) because OpenSSL's `enc` command doesn't support AEAD ciphers. The encrypt-then-MAC pattern provides equivalent authenticated encryption.
+
 **Implementation:**
 ```bash
-_encrypt_credential() {
+vault_encrypt() {
   local plaintext="$1"
-  local key_hex="$2"
-  local output_file="$3"
+  local key="$2"  # 64 bytes: 32 for AES, 32 for HMAC
 
-  local nonce
-  nonce=$(openssl rand -hex 12)
+  local enc_key="${key:0:64}"   # First 32 bytes (hex)
+  local mac_key="${key:64:64}"  # Second 32 bytes (hex)
 
-  echo -n "$plaintext" | openssl enc -aes-256-gcm \
-    -K "$key_hex" \
-    -iv "$nonce" \
-    -out "$output_file.tmp"
+  local iv=$(openssl rand -hex 16)
+  local ciphertext=$(echo -n "$plaintext" | openssl enc -aes-256-cbc -K "$enc_key" -iv "$iv" | xxd -p | tr -d '\n')
+  local hmac=$(echo -n "${iv}${ciphertext}" | xxd -r -p | openssl dgst -sha256 -mac HMAC -macopt hexkey:"$mac_key" | awk '{print $2}')
 
-  # Prepend nonce to ciphertext
-  echo -n "$nonce" | xxd -r -p > "$output_file"
-  cat "$output_file.tmp" >> "$output_file"
-  rm -f "$output_file.tmp"
-}
-
-_decrypt_credential() {
-  local input_file="$1"
-  local key_hex="$2"
-
-  # Extract nonce (first 12 bytes)
-  local nonce
-  nonce=$(head -c 12 "$input_file" | xxd -p)
-
-  # Decrypt remainder
-  tail -c +13 "$input_file" | openssl enc -d -aes-256-gcm \
-    -K "$key_hex" \
-    -iv "$nonce"
+  echo "$iv"
+  echo "$hmac"
+  echo "$ciphertext"
 }
 ```
 
 **Steps:**
-1. [ ] Implement `_encrypt_credential()` function
-2. [ ] Implement `_decrypt_credential()` function
-3. [ ] Add authentication tag verification
-4. [ ] Test round-trip encryption/decryption
-5. [ ] Handle decryption failures gracefully (wrong passphrase)
+1. [x] Implement `vault_encrypt()` function with AES-256-CBC
+2. [x] Implement `vault_decrypt()` function
+3. [x] Add HMAC-SHA256 authentication (encrypt-then-MAC pattern)
+4. [x] Test round-trip encryption/decryption
+5. [x] Handle decryption failures gracefully (wrong passphrase)
 
 **Acceptance Criteria:**
-- [ ] Encrypted file is not readable without passphrase
-- [ ] Wrong passphrase fails with clear error, not garbage output
-- [ ] Encryption uses unique nonce each time
+- [x] Encrypted file is not readable without passphrase
+- [x] Wrong passphrase fails with clear error (HMAC verification), not garbage output
+- [x] Encryption uses unique IV each time
 
-**Status:** [ ] Not Started / [ ] In Progress / [ ] Complete
+**Status:** [x] Complete
 
 ---
 
@@ -388,26 +373,30 @@ _decrypt_credential() {
 
 **Commands:**
 ```bash
-velum credential status              # Show stored credentials (masked)
-velum credential store --encrypt     # Enable encrypted storage
-velum credential clear               # Remove all stored credentials
-velum credential migrate             # Migrate from plaintext to vault
+velum credential init                # Initialize vault (first-time setup)
+velum credential status              # Show vault status
+velum credential store <provider>    # Store credential in vault
+velum credential clear [provider]    # Remove credential(s) from vault
+velum credential migrate             # Clean up plaintext creds and legacy session files
 ```
 
 **Steps:**
-1. [ ] Create `bin/velum-credential` script
-2. [ ] Implement `status` subcommand
-3. [ ] Implement `store` subcommand with passphrase prompt
-4. [ ] Implement `clear` subcommand with secure deletion
-5. [ ] Implement `migrate` subcommand
-6. [ ] Add to main `velum` dispatcher
+1. [x] Create `bin/velum-credential` script
+2. [x] Implement `init` subcommand with password confirmation
+3. [x] Implement `status` subcommand
+4. [x] Implement `store` subcommand with provider validation
+5. [x] Implement `clear` subcommand with secure deletion
+6. [x] Implement `migrate` subcommand (plaintext creds + legacy session files + vault key cache)
+7. [x] Add to main `velum` dispatcher
+8. [x] Integrate with `velum-connect` and `velum-config`
 
 **Acceptance Criteria:**
-- [ ] `velum credential status` shows credential presence without revealing values
-- [ ] `velum credential store --encrypt` prompts for passphrase twice
-- [ ] `velum credential clear` securely deletes all credential files
+- [x] `velum credential status` shows vault initialization and credential presence
+- [x] `velum credential store mullvad` validates 16-digit format, prompts for vault password
+- [x] `velum credential clear` securely deletes credential files
+- [x] Inline unlock model: vault password required each operation, never cached
 
-**Status:** [ ] Not Started / [ ] In Progress / [ ] Complete
+**Status:** [x] Complete
 
 ---
 
@@ -499,7 +488,7 @@ _get_credential_from_source() {
 - [ ] Command failures (non-zero exit) prevent connection with clear error
 - [ ] No credential logging regardless of source
 
-**Status:** [ ] Not Started / [ ] In Progress / [ ] Complete
+**Status:** [ ] Not Started
 
 ---
 
@@ -513,10 +502,10 @@ _get_credential_from_source() {
 | 2.1 | Remove plaintext storage | CRITICAL | [x] Complete |
 | 2.2 | tmpfs token storage | HIGH | [x] Complete |
 | 2.3 | Permission validation | HIGH | [x] Complete |
-| 3.1 | Argon2id KDF | N/A | [ ] |
-| 3.2 | AES-256-GCM encryption | N/A | [ ] |
-| 3.3 | Vault CLI | N/A | [ ] |
-| 4.1 | Credential source hook (user's choice) | N/A | [ ] |
+| 3.1 | Argon2id KDF | N/A | [x] Complete |
+| 3.2 | AES-256-CBC + HMAC-SHA256 encryption | N/A | [x] Complete |
+| 3.3 | Vault CLI | N/A | [x] Complete |
+| 4.1 | Credential source hook (user's choice) | N/A | [ ] Not Started |
 
 ---
 
@@ -526,6 +515,7 @@ _get_credential_from_source() {
 |---------|------|---------|
 | 0.1.0 | 2026-01-28 | Initial remediation plan |
 | 0.2.0 | 2026-01-28 | Phase 2 complete: tmpfs storage, permission validation |
+| 0.3.0 | 2026-01-28 | Phase 3 complete: Encrypted vault with Argon2id + AES-256-CBC/HMAC-SHA256, inline unlock model, session material hardening (WG keys + tokens to tmpfs) |
 
 ---
 
