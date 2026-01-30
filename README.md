@@ -12,12 +12,14 @@ velum-vpn provides a unified command-line interface for connecting to multiple V
 - **IPv6 Protection**: Blocks IPv6 at both interface and firewall level to prevent leaks
 - **DNS Leak Protection**: Routes DNS through VPN provider's servers with encrypted fallback
 - **DNS Fallback**: Quad9 (9.9.9.9) as secondary DNS, routed through VPN tunnel
+- **Server Selection**: Manual-only with quality/speed/detectability sort modes and jurisdiction scoring
+- **Jurisdiction Detection**: Flags servers with mismatched hosting (e.g., "Swiss" server on US infrastructure)
 - **WebRTC Leak Detection**: Automated risk assessment and browser-based testing
 - **VPN Detection Check**: Tests if your IP is flagged by detection services
 - **Encrypted Credential Vault**: Optional encrypted storage for account credentials using Argon2id + AES-256
 - **Cross-Platform**: Full support for macOS and Linux
 - **XDG Compliant**: Configuration stored in `~/.config/velum/` following Linux standards
-- **Security Hardened**: TLS 1.2+ enforcement, credential cleanup, input validation
+- **Security Hardened**: TLS 1.2+ enforcement, credential cleanup, input validation, no external credential tools
 
 ## Supported Providers
 
@@ -112,10 +114,10 @@ Options:
 Interactive configuration wizard with 5 phases:
 
 1. **Provider Selection**: Choose VPN provider (PIA, Mullvad, IVPN)
-2. **Authentication**: Enter credentials and authenticate
+2. **Authentication**: Enter credentials and authenticate (prompt or encrypted vault)
 3. **Security Profile**: Configure kill switch, IPv6, DNS settings
 4. **Connection Features**: Port forwarding, Dedicated IP (provider-dependent)
-5. **Server Selection**: Auto (lowest latency) or manual selection
+5. **Server Selection**: Manual selection with quality/speed/detectability sort modes
 
 Configuration is saved to `~/.config/velum/velum.conf`.
 
@@ -147,13 +149,14 @@ sudo velum connect
 
 **What it does:**
 1. Loads configuration from `~/.config/velum/velum.conf`
-2. Finds best server by latency (if auto mode)
+2. Retrieves credentials from configured source (prompt or vault)
 3. Generates WireGuard keypair
 4. Exchanges keys with provider API
 5. Creates WireGuard configuration
 6. Enables kill switch (if configured)
 7. Starts WireGuard interface
 8. Sets up port forwarding (if enabled)
+9. Starts background health monitor
 
 ### `velum disconnect`
 
@@ -303,10 +306,17 @@ velum credential migrate
 - Vault password required for **every** operation (never cached)
 - Salt stored separately in `~/.config/velum/vault/salt`
 
+**Credential Sources:**
+- `prompt` (default) - Enter credentials each time (most secure, no storage)
+- `vault` - Velum's encrypted vault (no identifying metadata)
+
+**Note:** External credential sources (Bitwarden, 1Password, pass, OS keychains) are **not supported** due to forensic metadata exposure on device seizure.
+
 **Workflow:**
-1. Run `velum credential init` to create the vault (one-time)
-2. Run `velum credential store <provider>` to store an account credential
-3. During `velum config` or `velum connect`, you'll be prompted to use vault credentials
+1. During `velum config`, choose credential source (prompt or vault)
+2. If using vault: run `velum credential init` to create the vault (one-time)
+3. Run `velum credential store <provider>` to store an account credential
+4. During `velum connect`, credentials are retrieved from configured source
 
 **Provider-specific validation:**
 - Mullvad: 16-digit account number
@@ -338,10 +348,13 @@ CONFIG[port_forward]="false"
 
 # Server
 CONFIG[allow_geo]="false"
-CONFIG[max_latency]="0.05"
+CONFIG[max_latency]="200"
 CONFIG[selected_region]=""
 CONFIG[selected_ip]=""
 CONFIG[selected_hostname]=""
+
+# Credential source
+CONFIG[credential_source]="prompt"
 ```
 
 ### Token Storage
@@ -368,6 +381,10 @@ CONFIG[selected_hostname]=""
 | `VELUM_LOG_LEVEL` | Log verbosity (0=DEBUG, 1=INFO, 2=WARN, 3=ERROR) | `1` (INFO) |
 | `VELUM_RUN_DIR` | Runtime directory (pid, state, logs) | `/run/velum` (Linux), `/var/run/velum` (macOS) |
 | `VELUM_LIB_DIR` | Persistent state (DNS backups) | `/var/lib/velum` |
+| `VELUM_PING_COUNT` | Number of pings per server during latency test | `1` |
+| `VELUM_PING_TIMEOUT` | Ping timeout in seconds | `1` |
+| `VELUM_DEBUG_LATENCY` | Enable latency debugging output (`1` to enable) | `0` |
+| `NO_COLOR` | Disable colored output (any value) | unset |
 
 **Note:** `XDG_RUNTIME_DIR` is required for session token storage. If not available, velum will fail-closed (refuse to store tokens) rather than fall back to disk storage.
 
@@ -418,6 +435,11 @@ velum-vpn follows a **security-first** architecture designed for device capture 
 - Argon2id key derivation (memory-hard, side-channel resistant)
 - Vault password required for every operation - never cached
 - Run `velum credential migrate` to detect and clean up any legacy plaintext credentials
+
+**External Tools Not Supported:**
+- Bitwarden, 1Password, pass, OS keychains are **not supported**
+- Reason: These tools store identifying metadata (email, GPG key IDs) that expose users on device seizure
+- Velum's vault stores only: random salt + encrypted blob (no identity correlation possible)
 
 **Memory Protection:**
 - Credentials cleared from memory immediately after use (`unset`)

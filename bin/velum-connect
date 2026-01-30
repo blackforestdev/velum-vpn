@@ -447,7 +447,7 @@ DESCRIPTION
 
     This command:
     1. Loads configuration from ~/.config/velum/velum.conf
-    2. Finds best server by latency (if auto mode)
+    2. Retrieves credentials from configured source (prompt or vault)
     3. Generates/loads WireGuard keypair
     4. Exchanges keys with provider API
     5. Creates WireGuard configuration

@@ -65,7 +65,8 @@ SUPPORTED PROVIDERS
 
 CONFIGURATION
     Config file:    ~/.config/velum/velum.conf
-    Tokens:         ~/.config/velum/tokens/
+    Tokens:         \$XDG_RUNTIME_DIR/velum/ (tmpfs, cleared on reboot)
+    Vault:          ~/.config/velum/vault/ (encrypted credentials)
     Runtime (Linux): /run/velum/
     Runtime (macOS): /var/run/velum/
 
