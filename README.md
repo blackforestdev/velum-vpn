@@ -55,7 +55,7 @@ velum-vpn provides a unified command-line interface for connecting to multiple V
 
 ```bash
 # Clone the repository
-git clone https://github.com/yourusername/velum-vpn.git
+git clone https://github.com/blackforestdev/velum-vpn.git
 cd velum-vpn
 
 # Add to PATH (optional)
