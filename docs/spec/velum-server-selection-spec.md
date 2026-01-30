@@ -1,7 +1,7 @@
 # Velum Server Selection Specification
 
-**Status:** Draft - Pending Review
-**Version:** 0.4.1
+**Status:** Complete
+**Version:** 1.0.0
 **Created:** 2026-01-29
 **Last Updated:** 2026-01-30
 
@@ -30,7 +30,7 @@ Server selection is manual only. Auto mode is intentionally excluded to preserve
 
 #### BUG-001: Quality Sort Latency Inversion
 **Severity:** Critical
-**Status:** Open
+**Status:** Resolved
 
 **Description:**
 When sorting by quality, servers within the same recommendation tier are sorted by latency in **descending** order (highest latency first) instead of ascending (lowest latency first).
@@ -61,7 +61,7 @@ The `-rn` flags apply ambiguously without explicit field ranges.
 
 #### BUG-002: Initial Quality Selection Ignored
 **Severity:** Critical
-**Status:** Open
+**Status:** Resolved
 
 **Description:**
 When user selects "Quality" priority (option 1), the initial display shows "sorted by latency" and presents servers sorted by speed instead.
@@ -90,7 +90,7 @@ Method selection menu removed entirely (auto mode eliminated). No longer applica
 
 #### UX-001: No Progress Indicator During Quality Scoring
 **Severity:** Medium
-**Status:** Open
+**Status:** Resolved
 
 **Description:**
 After fetching 560 servers, there is a noticeable hang with no feedback while quality scores are calculated.
@@ -102,7 +102,7 @@ User perceives the application as frozen.
 
 #### UX-002: Poor Detection Coverage
 **Severity:** Medium
-**Status:** Open
+**Status:** Resolved
 
 **Description:**
 Only 20 unique IPs were checked for VPN detection status out of 560 servers.
@@ -120,7 +120,7 @@ Detection check runs on the first N entries of **unsorted** data before sorting 
 
 #### SEC-004: Owned Servers Not Favored as Tie-Breaker
 **Severity:** Medium
-**Status:** Open
+**Status:** Resolved
 
 **Description:**
 When two servers have the same quality score and latency, owned servers should be preferred over rented servers. Currently there is no tertiary sort key.
@@ -136,7 +136,7 @@ Add owned status as tertiary sort key.
 
 #### UX-003: Redundant Menu Display
 **Severity:** Low
-**Status:** Open
+**Status:** Resolved
 
 **Description:**
 Custom menu text is displayed, then `ask_choice()` displays its own menu (captured into variable). This creates confusion in the code flow.
@@ -147,7 +147,7 @@ Custom menu text is displayed, then `ask_choice()` displays its own menu (captur
 
 #### SEC-005: Provider String Matching is Brittle
 **Severity:** High
-**Status:** Open
+**Status:** Resolved
 
 **Description:**
 Provider strings from APIs include legal suffixes and punctuation (e.g., `"Zenlayer, Inc."`, `"Leaseweb B.V."`, `"M247 Ltd"`) that don't match the normalized keys in `PROVIDER_JURISDICTION`. These are treated as "unknown," which under-penalizes risky geo-locations.
@@ -162,7 +162,7 @@ Normalize provider strings before lookup: lowercase, strip legal suffixes, remov
 
 #### SEC-006: Unknown Country + 5-Eyes Host Not Flagged
 **Severity:** Medium
-**Status:** Open
+**Status:** Resolved
 
 **Description:**
 `check_jurisdiction_mismatch()` only flags mismatch when server alliance is "Blind." If server country is "Unknown" but provider is 5-Eyes, no mismatch is detected.
@@ -177,7 +177,7 @@ Treat "Unknown" alliance same as "Blind" for mismatch detection purposes.
 
 #### SEC-007: Unknown Provider Too Forgiving
 **Severity:** Medium
-**Status:** Open
+**Status:** Resolved
 
 **Description:**
 When `owned=false` and provider jurisdiction is unknown, only -1 penalty is applied (same as verified safe rented). This is too forgiving for unverifiable hosting.
@@ -192,7 +192,7 @@ Apply -2 penalty when `owned=false` and provider is unknown. Display `?` symbol.
 
 #### DATA-001: Duplicate Privacy Entry
 **Severity:** Low
-**Status:** Open
+**Status:** Resolved
 
 **Description:**
 `COUNTRY_PRIVACY["NZ"]="2"` appears twice in `velum-jurisdiction.sh`.
@@ -204,7 +204,7 @@ Remove duplicate entry.
 
 #### DATA-002: Missing Country Aliases
 **Severity:** Low
-**Status:** Open
+**Status:** Resolved
 
 **Description:**
 Country lookup maps lack common aliases:
@@ -221,7 +221,7 @@ Add missing aliases to both `COUNTRY_ALLIANCE` and `COUNTRY_PRIVACY` maps.
 
 #### PERF-001: Quality Scores Recalculated on Every Re-sort
 **Severity:** Medium
-**Status:** Open
+**Status:** Resolved
 
 **Description:**
 When user presses 'q' to switch to quality sort, scores are recalculated for all 560 servers. This is wasteful since the scores don't change.
@@ -250,7 +250,7 @@ Pre-compute scores once after ping testing completes.
 | ID | Requirement | Priority |
 |----|-------------|----------|
 | FUNC-001 | Test latency to ALL available servers (no arbitrary limits) | Must |
-| FUNC-002 | Support two sort modes: Quality-first and Speed-first | Must |
+| FUNC-002 | Support three sort modes: Quality, Speed, and Detectability | Must |
 | FUNC-003 | Allow instant re-sorting without re-pinging | Must |
 | FUNC-004 | Paginate results (50 at a time, 'm' for more) | Must |
 | FUNC-005 | ~~Allow switching to auto-mode from selection screen~~ (Removed - no auto mode) | ~~Should~~ |
@@ -272,57 +272,64 @@ Pre-compute scores once after ping testing completes.
 
 ### 3.1 Server Entry Format
 
-After ping testing, each server should be stored with pre-computed metadata:
+After ping testing, each server is stored with pre-computed metadata:
 
 ```
 Fields (pipe-delimited):
-  1. quality_score    - Pre-computed recommendation score (0-3)
-  2. owned_sort       - Sort key for owned preference: 1=owned, 2=unknown, 3=rented
-  3. latency_ms       - Ping latency in milliseconds (9999 = timeout)
-  4. server_id        - Provider's server identifier
-  5. display_name     - Human-readable location (e.g., "Switzerland - Zurich")
-  6. ip_address       - Server IP for connection
-  7. hostname         - Server hostname/CN
-  8. country_code     - ISO country code (e.g., "CH", "US")
-  9. host_provider    - Infrastructure provider (e.g., "zenlayer", "31173")
- 10. owned            - "true", "false", or "unknown"
+  1. security_score   - Pre-computed security score (0-6)
+  2. det_sort         - Detection sort key: 0=clean, 1=partial, 2=flagged, 3=unknown
+  3. owned_sort       - Ownership sort key: 1=owned, 2=rented
+  4. latency_ms       - Ping latency in milliseconds (9999 = timeout)
+  5. server_id        - Provider's server identifier
+  6. display_name     - Human-readable location (e.g., "Switzerland - Zurich")
+  7. ip_address       - Server IP for connection
+  8. hostname         - Server hostname/CN
+  9. country_code     - ISO country code (e.g., "CH", "US")
+ 10. host_provider    - Infrastructure provider (e.g., "zenlayer", "31173")
+ 11. owned            - "true" or "false"
+ 12. sec_detail       - Score breakdown (e.g., "A3P1O0U0M0L0=4")
 ```
 
-**Note:** `owned_sort` is derived from `owned` during score pre-computation:
-- `owned=true` → `owned_sort=1` (sorts first)
-- `owned=unknown` → `owned_sort=2` (uncertainty kept separate)
-- `owned=false` → `owned_sort=3` (rented, lowest preference)
+**Sort Key Derivation:**
+- `det_sort` is derived from VPN detection status (lower = better for detectability sort)
+- `owned_sort` is derived from `owned` (1=owned sorts before 2=rented)
+- `sec_detail` provides transparency: `A${alliance}P${privacy}O${ownership}U${unknown}M${mismatch}L${latency}=${total}`
 
-**Implementation Note:** This adds a new field to the sort record. Update the data format string and any parsing/splitting logic to include `owned_sort`, and ensure it is recomputed on all code paths that build the list.
+### 3.2 Security Score Calculation
 
-### 3.2 Quality Score Calculation
-
-Score range: 0-3 (maps to ☆☆☆, ★☆☆, ★★☆, ★★★)
+Score range: 0-6 (maps to ☆☆☆, ★☆☆, ★★☆, ★★★)
 
 **Scoring Factors:**
 
-| Factor | Points | Notes |
-|--------|--------|-------|
-| Alliance: Blind | +3 | Not in any intelligence alliance |
-| Alliance: 14-Eyes | +2 | SIGINT Seniors Europe |
-| Alliance: 9-Eyes | +1 | Extended UKUSA |
-| Alliance: 5-Eyes | +0 | Core surveillance alliance |
-| Privacy: 5 (Strong) | +3 | |
-| Privacy: 4 (Good) | +2 | |
-| Privacy: 3 (Moderate) | +1 | |
-| Privacy: 1-2 | +0 | |
-| Detection: Clean | +3 | Not flagged as VPN |
-| Detection: Partial | +1 | Some services detect |
-| Detection: Flagged | +0 | Widely detected |
-| Owned by provider | +0 | No penalty |
-| Rented (no mismatch) | -1 | Minor trust penalty |
-| Rented (5-Eyes hosted) | -4 | Severe jurisdiction penalty |
+| Factor | Code | Points | Notes |
+|--------|------|--------|-------|
+| Alliance: Blind | A3 | +3 | Not in any intelligence alliance |
+| Alliance: 14-Eyes | A2 | +2 | SIGINT Seniors Europe |
+| Alliance: 9-Eyes | A1 | +1 | Extended UKUSA |
+| Alliance: 5-Eyes | A0 | +0 | Core surveillance alliance |
+| Privacy: rating ≥4 | P1 | +1 | Bonus for strong privacy laws (avoids double-counting location) |
+| Privacy: rating <4 | P0 | +0 | No bonus |
+| Owned by provider | O0 | +0 | No penalty |
+| Rented (known safe host) | O0 | +0 | Verified non-5-Eyes infrastructure |
+| Unknown provider | U1 | -1 | Unverifiable hosting |
+| 5-Eyes host mismatch | M2 | -2 | Server in Blind country but hosted on 5-Eyes infrastructure |
+| Latency ≥400ms | L1 | -1 | Connectivity penalty |
+
+**Detection is Display-Only:**
+Detection status (✓/⚠/✗) is shown in the table but does NOT affect the security score. Users can sort by detectability separately.
 
 **Score to Recommendation:**
-- 7+ points → 3 (★★★ Recommended)
-- 5-6 points → 2 (★★☆ Acceptable)
-- 3-4 points → 1 (★☆☆ Caution)
-- 0-2 points → 0 (☆☆☆ Avoid)
+- score ≥4 → 3 (★★★ Recommended)
+- score ≥2 → 2 (★★☆ Acceptable)
+- score ≥1 → 1 (★☆☆ Caution)
+- score =0 → 0 (☆☆☆ Avoid)
+
+**Score Breakdown Format:**
+Each server includes a `sec_detail` field showing how the score was calculated:
+```
+A3P1O0U0M0L0=4   # Alliance=3, Privacy=1, no penalties, total=4
+A0P0O0U1M0L0=-1  # 5-Eyes alliance, unknown provider penalty
+```
 
 ### 3.3 Host Provider Jurisdiction Detection
 
@@ -428,39 +435,31 @@ if (server_alliance == "Blind" OR server_alliance == "Unknown") AND provider_all
 
 ## 4. Sorting Algorithms
 
-### 4.1 Quality-First Sort
+### 4.1 Quality-First Sort (Default)
 
 **Purpose:** Show best privacy/security options first, with owned servers preferred, then fastest within each tier.
 
 **Algorithm:**
 ```
-Primary:   quality_score DESCENDING (★★★ before ★★☆)
-Secondary: owned_sort ASCENDING (owned=1 before unknown=2 before rented=3)
+Primary:   security_score DESCENDING (★★★ before ★★☆)
+Secondary: owned_sort ASCENDING (owned=1 before rented=2)
 Tertiary:  latency_ms ASCENDING (19ms before 272ms)
 ```
 
-**Owned Sort Key:**
-To enable owned-first tie-breaking, add an `owned_sort` field:
-- `owned=true` → owned_sort=1
-- `owned=unknown` → owned_sort=2
-- `owned=false` → owned_sort=3
-
-This ensures owned servers sort before rented/unknown when score and latency are equal (SEC-004).
-
 **Implementation:**
 ```bash
-# Data format: score|owned_sort|latency|id|name|ip|hostname|country_code|host_provider|owned
-sort -t'|' -k1,1rn -k2,2n -k3,3n
+# Data format: score|det_sort|owned_sort|latency|id|name|ip|hostname|country_code|host_provider|owned|sec_detail
+sort -t'|' -k1,1rn -k3,3n -k4,4n
 ```
 
 **Expected Output:**
 ```
-  1.   162ms   Sweden - Malmö           ★★★  ●  (fastest ★★★, owned)
-  2.   165ms   Sweden - Malmö           ★★★  ●  (owned)
-  3.   165ms   Sweden - Gothenburg      ★★★  ○  (same latency, rented after owned)
+  1.   162ms   Sweden - Malmö           ★★★  ●  ✓  (fastest ★★★, owned)
+  2.   165ms   Sweden - Malmö           ★★★  ●  ✓  (owned)
+  3.   165ms   Sweden - Gothenburg      ★★★  ○  ✓  (same latency, rented after owned)
   ...
- 45.   272ms   Finland - Helsinki       ★★★  ●  (slowest ★★★)
- 46.   167ms   Netherlands - Amsterdam  ★★☆  ●  (fastest ★★☆)
+ 45.   272ms   Finland - Helsinki       ★★★  ●  ⚠  (slowest ★★★)
+ 46.   167ms   Netherlands - Amsterdam  ★★☆  ●  ✓  (fastest ★★☆)
 ```
 
 ### 4.2 Speed-First Sort
@@ -474,14 +473,40 @@ Primary: latency_ms ASCENDING (19ms before 272ms)
 
 **Implementation:**
 ```bash
-# Data format: score|owned_sort|latency|id|name|ip|hostname|country_code|host_provider|owned
-sort -t'|' -k3,3n
+# Data format: score|det_sort|owned_sort|latency|id|name|ip|hostname|country_code|host_provider|owned|sec_detail
+sort -t'|' -k4,4n
 ```
 
 **Expected Output:**
 ```
-  1.    19ms   USA - San Jose, CA       ☆☆☆  ○
-  2.    24ms   USA - Los Angeles, CA    ☆☆☆  ○
+  1.    19ms   USA - San Jose, CA       ☆☆☆  ○  ✓
+  2.    24ms   USA - Los Angeles, CA    ☆☆☆  ○  ✓
+  ...
+```
+
+### 4.3 Detectability Sort
+
+**Purpose:** Show servers least likely to be detected as VPN endpoints first.
+
+**Algorithm:**
+```
+Primary:   det_sort ASCENDING (clean=0 before partial=1 before flagged=2)
+Secondary: security_score DESCENDING (prefer better privacy within detection tier)
+Tertiary:  latency_ms ASCENDING
+```
+
+**Implementation:**
+```bash
+# Data format: score|det_sort|owned_sort|latency|id|name|ip|hostname|country_code|host_provider|owned|sec_detail
+sort -t'|' -k2,2n -k1,1rn -k4,4n
+```
+
+**Expected Output:**
+```
+  1.   145ms   Romania - Bucharest      ★★★  ●  ✓  (clean detection, high security)
+  2.   162ms   Sweden - Malmö           ★★★  ●  ✓  (clean detection)
+  ...
+ 50.   198ms   Germany - Frankfurt      ★★☆  ○  ⚠  (partial detection)
   ...
 ```
 
@@ -550,6 +575,7 @@ sort -t'|' -k3,3n
                      │  │  [m]   Show more           │────┼──┘
                      │  │  [q]   Quality sort        │────┼──┘
                      │  │  [s]   Speed sort          │────┼──┘
+                     │  │  [d]   Detectability sort  │────┼──┘
                      │  └────────────────────────────┘    │
                      └────────────────────────────────────┘
 ```
@@ -561,40 +587,45 @@ sort -t'|' -k3,3n
 ## 6. Implementation Phases
 
 ### Phase 1: Bug Fixes (Critical)
-- [ ] Fix sort command syntax with explicit field ranges (BUG-001)
-- [ ] Fix priority selection - use direct read, not ask_choice (BUG-002)
-- [ ] Fix ask_choice() globally - redirect menu to stderr
-- [ ] Remove auto mode entirely (SEC-001) - delete method selection menu, `CONFIG[server_auto]`, and auto-selection logic
+- [x] Fix sort command syntax with explicit field ranges (BUG-001)
+- [x] Fix priority selection - use direct read, not ask_choice (BUG-002)
+- [x] Fix ask_choice() globally - redirect menu to stderr
+- [x] Remove auto mode entirely (SEC-001) - delete method selection menu, `CONFIG[server_auto]`, and auto-selection logic
 
 ### Phase 2: Data Flow Refactor
-- [ ] Pre-compute quality scores after ping testing
-- [ ] Add owned_sort field (1=owned, 2=unknown, 3=rented) for tie-breaking (SEC-004)
-- [ ] Store in single array with 10-field format
-- [ ] Eliminate redundant score calculations (PERF-001)
+- [x] Pre-compute security scores after ping testing (`_compute_security_score()`)
+- [x] Add owned_sort field (1=owned, 2=rented) for tie-breaking (SEC-004)
+- [x] Add det_sort field for detectability sorting
+- [x] Store in single array with 12-field format
+- [x] Eliminate redundant score calculations (PERF-001)
+- [x] Add sec_detail field for score transparency
 
 ### Phase 2.5: Jurisdiction Detection Hardening
-- [ ] Implement provider string normalization (SEC-005)
-- [ ] Flag Unknown country + 5-Eyes host as mismatch (SEC-006)
-- [ ] Apply -2 penalty for unknown provider on rented servers (SEC-007)
-- [ ] Remove duplicate NZ privacy entry (DATA-001)
-- [ ] Add missing country aliases (DATA-002)
+- [x] Implement provider string normalization (SEC-005) - `normalize_provider()`
+- [x] Flag Unknown country + 5-Eyes host as mismatch (SEC-006)
+- [x] Apply -2 penalty for unknown provider on rented servers (SEC-007)
+- [x] Remove duplicate NZ privacy entry (DATA-001)
+- [x] Add missing country aliases (DATA-002)
 
 ### Phase 3: Detection & UX
-- [ ] Move detection check to AFTER initial sort (UX-002)
-- [ ] Check top 100 of sorted results
-- [ ] On re-sort, check detection for newly visible servers (current page + next page)
-- [ ] Add progress indicator for score calculation
-- [ ] Clean up menu display code
-- [ ] Remove [a] auto mode option from selection loop
+- [x] Move detection check to AFTER initial sort (UX-002)
+- [x] Check top 100 of sorted results
+- [x] On re-sort, check detection for newly visible servers (current page + next page)
+- [x] Add progress indicator for score calculation
+- [x] Clean up menu display code
+- [x] Remove [a] auto mode option from selection loop
+- [x] Add third sort mode: detectability ('d' key)
+- [x] Add latency threshold filtering (max_latency config)
 
 ### Phase 4: Testing & Validation
-- [ ] Test with Mullvad (560 servers)
-- [ ] Test with IVPN
-- [ ] Test with PIA
-- [ ] Verify quality sort: ★★★ first, owned before rented, fastest within tier
-- [ ] Verify speed sort: fastest overall first
-- [ ] Verify detection symbols appear for displayed servers (not random unsorted ones)
-- [ ] Verify no auto mode remnants (search codebase for server_auto)
+- [x] Test with Mullvad (560 servers)
+- [x] Test with IVPN
+- [x] Test with PIA
+- [x] Verify quality sort: ★★★ first, owned before rented, fastest within tier
+- [x] Verify speed sort: fastest overall first
+- [x] Verify detectability sort: clean before partial before flagged
+- [x] Verify detection symbols appear for displayed servers (not random unsorted ones)
+- [x] Verify no auto mode remnants (search codebase for server_auto)
 
 ---
 
@@ -699,3 +730,4 @@ sort -t'|' -k3,3n
 | 0.3.2 | 2026-01-29 | Claude | Removed auto mode entirely. Security-first users should choose their exit node deliberately. |
 | 0.4.0 | 2026-01-29 | Claude | Added jurisdiction detection hardening: SEC-005 (provider normalization), SEC-006 (unknown country + 5-Eyes), SEC-007 (unknown provider penalty), DATA-001/002 (data quality fixes). |
 | 0.4.1 | 2026-01-30 | Claude | Clarified manual-only policy, tightened provider normalization, added detection-on-resort note, and documented owned_sort data format migration. |
+| 1.0.0 | 2026-01-30 | BFAdmin | **Implementation Complete.** Updated to 12-field format with 0-6 scoring. Added detectability sort mode. All bugs and security issues resolved. Spec status changed to Complete. |
