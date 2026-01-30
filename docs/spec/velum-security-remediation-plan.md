@@ -1,7 +1,7 @@
 # Velum Security Remediation Plan
 
-**Version:** 0.3.0
-**Date:** 2026-01-28
+**Version:** 0.6.0
+**Date:** 2026-01-29
 **Status:** Active
 **Audit Date:** 2026-01-28
 
@@ -474,21 +474,101 @@ _get_credential_from_source() {
 ```
 
 **Steps:**
-1. [ ] Add `credential_source` config option to tokenizer
-2. [ ] Implement `prompt` source (already exists, formalize)
-3. [ ] Implement `command` source with proper error handling
-4. [ ] Implement `vault` source (requires Phase 3)
-5. [ ] Document configuration options
+1. [x] Add `credential_source` config option to tokenizer
+2. [x] Implement `prompt` source (already exists, formalize)
+3. [x] Implement `command` source with proper error handling
+4. [x] Implement `vault` source (requires Phase 3)
+5. [x] Document configuration options
 6. [ ] Test with various user command examples
 
 **Acceptance Criteria:**
-- [ ] `credential_source=prompt` asks user interactively
-- [ ] `credential_source=command` executes user's configured command
-- [ ] `credential_source=vault` decrypts from velum vault
-- [ ] Command failures (non-zero exit) prevent connection with clear error
-- [ ] No credential logging regardless of source
+- [x] `credential_source=prompt` asks user interactively
+- [x] `credential_source=command` executes user's configured command
+- [x] `credential_source=vault` decrypts from velum vault
+- [x] Command failures (non-zero exit) prevent connection with clear error
+- [x] No credential logging regardless of source
 
-**Status:** [ ] Not Started
+**Status:** [x] Complete
+
+---
+
+## Phase 4.x: External Credential Sources REMOVED (Security Hardening)
+
+### 4.2 Removal of External Credential Source Support
+
+**Severity:** CRITICAL (Security Hardening)
+**Purpose:** Eliminate forensic metadata exposure from external tools
+
+**Overview:**
+Security audit revealed that external credential tools (password managers, OS keychains) create forensic artifacts that violate velum's threat model. On device seizure, adversaries can extract identifying information even without decrypting credentials.
+
+**Forensic Exposure by Tool:**
+| Tool | Forensic Artifact | Decision |
+|------|-------------------|----------|
+| Bitwarden CLI | Plaintext email, KDF params, org membership | **BLACKLIST** |
+| 1Password CLI | Account metadata, team memberships | **BLACKLIST** |
+| pass/gopass | GPG key IDs (correlatable via keyservers) | **BLACKLIST** |
+| KeePassXC CLI | Database path, metadata | **BLACKLIST** |
+| GNOME Keyring | Session-tied, persists across reboots | **BLACKLIST** |
+| macOS Keychain | Apple ID integration, identity-tied | **BLACKLIST** |
+
+**Velum's Vault Comparison:**
+- Stores ONLY: random salt + encrypted blob
+- NO email addresses, NO account IDs in metadata
+- NO identity correlation possible
+
+**Supported Sources (Hardened):**
+| Source | Description |
+|--------|-------------|
+| `prompt` | Ask user each time (default, most secure) |
+| `vault` | Velum's encrypted vault (no identifying metadata) |
+
+**User Flow (Simplified):**
+```
+CREDENTIAL STORAGE
+==================
+
+How should velum retrieve your account credentials?
+
+  1) Prompt each time     (default - most secure, no storage)
+  2) Encrypted vault      (Velum's built-in AES-256 encrypted storage)
+
+Note: External password managers are not supported due to
+forensic metadata exposure on device seizure.
+
+Select [1-2, default=1]:
+```
+
+**Migration for Existing Users:**
+Users with `credential_source=command` receive a hard error with clear migration path:
+- `velum connect` fails with security explanation
+- `velum config` clears deprecated setting and re-runs wizard
+
+**Files Modified:**
+| File | Changes |
+|------|---------|
+| `lib/velum-credential.sh` | Removed tool detection, simplified wizard to prompt/vault only |
+| `lib/velum-security.sh` | Validation rejects credential_source=command |
+| `bin/velum-connect` | Deprecation check before connection |
+| `bin/velum-config` | Deprecation check with reconfiguration |
+
+**Steps:**
+1. [x] Remove external tool detection code (_CREDENTIAL_TOOLS, _DESKTOP_APPS)
+2. [x] Remove external tool functions (credential_detect_tools, etc.)
+3. [x] Simplify wizard to only offer prompt and vault
+4. [x] Add credential_check_deprecated_source() for migration
+5. [x] Update security validation to reject command source
+6. [x] Update documentation
+
+**Acceptance Criteria:**
+- [x] New config wizard only shows prompt and vault options
+- [x] Existing credential_source=command fails with security message
+- [x] Security validation rejects command source in config
+- [x] Documentation updated with forensic exposure rationale
+
+**Status:** [x] Complete
+
+**Design Principle:** Security must be 100% or it provides false assurance. Velum's threat model assumes device seizure - any tool that leaves identifying artifacts defeats the purpose.
 
 ---
 
@@ -505,7 +585,8 @@ _get_credential_from_source() {
 | 3.1 | Argon2id KDF | N/A | [x] Complete |
 | 3.2 | AES-256-CBC + HMAC-SHA256 encryption | N/A | [x] Complete |
 | 3.3 | Vault CLI | N/A | [x] Complete |
-| 4.1 | Credential source hook (user's choice) | N/A | [ ] Not Started |
+| 4.1 | Credential source hook (user's choice) | N/A | [x] Complete |
+| 4.2 | ~~Interactive credential source wizard~~ → External sources REMOVED | CRITICAL | [x] Complete |
 
 ---
 
@@ -516,6 +597,9 @@ _get_credential_from_source() {
 | 0.1.0 | 2026-01-28 | Initial remediation plan |
 | 0.2.0 | 2026-01-28 | Phase 2 complete: tmpfs storage, permission validation |
 | 0.3.0 | 2026-01-28 | Phase 3 complete: Encrypted vault with Argon2id + AES-256-CBC/HMAC-SHA256, inline unlock model, session material hardening (WG keys + tokens to tmpfs) |
+| 0.4.0 | 2026-01-28 | Phase 4 complete: External credential command integration, unified credential_get_from_source() API |
+| 0.5.0 | 2026-01-28 | Phase 4.x: Interactive credential source wizard with tool detection |
+| 0.6.0 | 2026-01-29 | **SECURITY HARDENING**: External credential sources REMOVED (Bitwarden, 1Password, pass, keychains blacklisted due to forensic metadata exposure). Only prompt and vault supported. |
 
 ---
 

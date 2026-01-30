@@ -1,8 +1,8 @@
 # Velum Credential Security Specification
 
-**Version:** 0.2.0
-**Date:** 2026-01-28
-**Status:** Implemented (Phase 1-3 Complete)
+**Version:** 0.4.0
+**Date:** 2026-01-29
+**Status:** Implemented (Phase 1-4 Complete, External Sources Removed)
 **Classification:** Security-Critical
 
 ---
@@ -192,66 +192,73 @@ velum credential store ivpn     # Store another credential
 - **Inline unlock model**: Vault password required for EVERY operation, never cached
 - No derived key stored anywhere (not even in tmpfs)
 
-### 4.3 Alternative: External Credential Source (User's Choice)
+### 4.3 External Credential Sources: REMOVED (Security Risk)
 
-**Principle:** Velum does not mandate any specific secret management solution. Users choose their own tooling based on their threat model and preferences (opt-in only).
+**Status:** ~~Alternative: External Credential Source~~ → **REMOVED**
 
-**Supported credential sources:**
+**Date Removed:** 2026-01-29
+
+**Reason:** Security audit revealed that external credential tools create forensic artifacts that violate velum's threat model. On device seizure, adversaries can extract identifying information even without decrypting the credential itself.
+
+**Forensic Exposure by Tool:**
+
+| Tool | Forensic Artifact | Risk Level |
+|------|-------------------|------------|
+| Bitwarden CLI | Plaintext email address, KDF parameters, org membership | **CRITICAL** |
+| 1Password CLI | Account metadata, team memberships, email | **CRITICAL** |
+| pass/gopass | GPG key IDs (traceable via public keyservers) | **HIGH** |
+| KeePassXC CLI | Database path, metadata, access timestamps | **HIGH** |
+| GNOME Keyring | Session-tied, persists across reboots, identity-linked | **HIGH** |
+| macOS Keychain | Apple ID integration, identity-tied, cloud sync exposure | **HIGH** |
+
+**Comparison with Velum's Vault:**
+
+| Artifact | External Tools | Velum Vault |
+|----------|----------------|-------------|
+| User email | Exposed | Not stored |
+| Account ID | External storage | Encrypted only |
+| KDF parameters | Exposed | Salt only (no identity) |
+| Access timestamps | Logged | Not logged |
+| Identity correlation | Possible | Not possible |
+
+**Supported credential sources (hardened):**
 
 | Source | Configuration | Description |
 |--------|---------------|-------------|
-| `prompt` | (default) | Ask user for credential each time |
-| `vault` | Built-in | Velum's encrypted vault (Argon2id + AES-256-GCM) |
-| `command` | User-defined | Execute user's command to retrieve credential |
+| `prompt` | (default) | Ask user for credential each time - **most secure** |
+| `vault` | Built-in | Velum's encrypted vault (Argon2id + AES-256-CBC/HMAC) - **no identifying metadata** |
 
-**The `command` source enables any external tool:**
-- Password managers (Bitwarden, 1Password, KeePassXC, pass, gopass)
-- Hardware tokens (YubiKey, Nitrokey, OnlyKey)
-- Custom scripts
-- Enterprise secret management (Vault, AWS Secrets Manager)
+**Migration for existing users:**
 
-**Configuration:**
-```bash
-# In tokenizer.conf:
+Users with `credential_source=command` in their config will receive a hard error:
+```
+SECURITY: External credential sources are no longer supported
 
-# Option 1: Prompt every time (default, most secure)
-TOKENIZER[credential_source]="prompt"
+Your configuration uses credential_source=command
 
-# Option 2: Use velum's encrypted vault
-TOKENIZER[credential_source]="vault"
+Reason: External tools (Bitwarden, 1Password, pass, keychains)
+store identifying metadata that exposes you on device seizure.
 
-# Option 3: External command (user's choice of tooling)
-TOKENIZER[credential_source]="command"
-TOKENIZER[credential_command]="/path/to/your/script"
-# OR
-TOKENIZER[credential_command]="bw get password mullvad-vpn"
-# OR
-TOKENIZER[credential_command]="pass show vpn/mullvad"
-# OR
-TOKENIZER[credential_command]="yubico-piv-tool -a verify-pin -a decrypt < ~/.secrets/mullvad.enc"
+Velum now only supports:
+  1) prompt - Enter credential each time (most secure)
+  2) vault  - Velum's encrypted vault (no identifying metadata)
+
+To reconfigure: velum config
 ```
 
-**Security considerations for `command` source:**
-- User accepts responsibility for their command's security
-- Command output is treated as the credential (stdout, trimmed)
-- Command errors (non-zero exit) prevent connection
-- Velum does not log or store the command output
-
-**Why this approach:**
-- No vendor lock-in
-- Respects user's existing security infrastructure
-- Supports air-gapped and enterprise environments
-- Users control their own threat model tradeoffs
+**Design principle:** Velum's threat model assumes device seizure by sophisticated adversaries (LEO, border agents, state actors). Any storage mechanism that leaves identifying artifacts - even encrypted ones with metadata - violates this threat model. Security must be 100% or it provides false assurance.
 
 ### 4.4 Storage Mode Comparison
 
-| Mode | Device Seizure | Live System Attack | UX |
+| Mode | Device Seizure | Forensic Exposure | UX |
 |------|----------------|-------------------|-----|
-| **No persistence** (default) | Safe | Safe | Enter ID each session |
-| **Encrypted vault** | Safe (if passphrase not compelled) | Safe (locked) | Enter passphrase once |
-| **Hardware key (YubiKey)** | Safe (requires physical key) | Safe (requires touch) | Key + PIN |
-| **Password manager** | Safe (external storage) | Depends on manager | Manager unlock |
-| **Plaintext** (current) | **VULNERABLE** | **VULNERABLE** | Convenient |
+| **No persistence** (default) | Safe | None | Enter ID each session |
+| **Encrypted vault** | Safe (if passphrase not compelled) | Salt only (no identity) | Enter passphrase each time |
+| ~~Hardware key (YubiKey)~~ | ~~Safe~~ | **GPG key ID exposed** | REMOVED |
+| ~~Password manager~~ | ~~Safe~~ | **Email/identity exposed** | REMOVED |
+| ~~Plaintext~~ | **VULNERABLE** | **Full exposure** | REMOVED |
+
+**Note:** External tools (YubiKey via GPG, password managers) were removed in v0.4.0 due to forensic metadata exposure that violates velum's threat model.
 
 ---
 
@@ -428,13 +435,13 @@ velum credential migrate
 
 | File | Change | Status |
 |------|--------|--------|
-| `lib/velum-credential.sh` | NEW: Credential management library (tmpfs, migration) | Complete |
+| `lib/velum-credential.sh` | NEW: Credential management library (tmpfs, migration, credential_get_from_source API) | Complete |
 | `lib/velum-vault.sh` | NEW: Encrypted storage (Argon2id + AES-256-CBC/HMAC-SHA256) | Complete |
 | `bin/velum-credential` | NEW: Credential CLI (init, store, clear, migrate) | Complete |
 | `lib/providers/pia.sh` | MODIFY: Tokens to tmpfs (`--runtime` flag) | Complete |
-| `bin/velum-config` | MODIFY: Vault integration for credential lookup | Complete |
-| `bin/velum-connect` | MODIFY: Vault integration, WG keys to tmpfs | Complete |
-| `lib/velum-security.sh` | MODIFY: Added credential_source validation | Complete |
+| `bin/velum-config` | MODIFY: Uses credential_get_from_source() for unified credential retrieval | Complete |
+| `bin/velum-connect` | MODIFY: Uses credential_get_from_source(), WG keys to tmpfs | Complete |
+| `lib/velum-security.sh` | MODIFY: Added credential_source + credential_command validation | Complete |
 
 ---
 
@@ -499,6 +506,7 @@ nonce=$(openssl rand 12)
 |---------|------|---------|
 | 0.1.0-draft | 2026-01-28 | Initial specification |
 | 0.2.0 | 2026-01-28 | Implementation complete: Argon2id KDF, AES-256-CBC/HMAC-SHA256 encryption, inline unlock model, tmpfs session storage, vault CLI, migration tools. All audit findings resolved. |
+| 0.4.0 | 2026-01-29 | **SECURITY HARDENING**: Removed all external credential source support (Bitwarden, 1Password, pass, keychains). Forensic metadata exposure violates threat model. Only prompt and vault sources remain. |
 
 ---
 

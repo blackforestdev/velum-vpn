@@ -126,6 +126,7 @@ validate_killswitch_lan() {
 readonly VELUM_KNOWN_CONFIG_KEYS=(
   "provider"
   "credential_source"
+  "credential_command"
   "killswitch"
   "killswitch_lan"
   "ipv6_disabled"
@@ -134,7 +135,6 @@ readonly VELUM_KNOWN_CONFIG_KEYS=(
   "dip_token"
   "port_forward"
   "allow_geo"
-  "server_auto"
   "max_latency"
   "selected_region"
   "selected_ip"
@@ -223,7 +223,7 @@ safe_load_config() {
       local validation_error=""
       case "$key" in
         # Boolean keys: must be "true" or "false"
-        killswitch|ipv6_disabled|use_provider_dns|port_forward|dip_enabled|server_auto|allow_geo)
+        killswitch|ipv6_disabled|use_provider_dns|port_forward|dip_enabled|allow_geo)
           if [[ "$value" != "true" && "$value" != "false" ]]; then
             validation_error="Invalid boolean value for $key: '$value'"
           fi
@@ -234,10 +234,19 @@ safe_load_config() {
             validation_error="Invalid killswitch_lan value: '$value' (must be detect, block, or CIDR)"
           fi
           ;;
-        # Credential source: prompt, vault, or command
+        # Credential source: prompt or vault ONLY (security hardened)
+        # External sources (command) removed due to forensic metadata exposure
         credential_source)
-          if [[ "$value" != "prompt" && "$value" != "vault" && "$value" != "command" ]]; then
-            validation_error="Invalid credential_source value: '$value' (must be prompt, vault, or command)"
+          if [[ "$value" == "command" ]]; then
+            validation_error="SECURITY: credential_source=command no longer supported (forensic exposure risk)"
+          elif [[ "$value" != "prompt" && "$value" != "vault" && "$value" != "" ]]; then
+            validation_error="Invalid credential_source value: '$value' (must be prompt or vault)"
+          fi
+          ;;
+        # Credential command: DEPRECATED - external credential sources removed
+        credential_command)
+          if [[ -n "$value" ]]; then
+            validation_error="SECURITY: credential_command no longer supported (external sources removed)"
           fi
           ;;
         # Provider: must be alphanumeric/underscore only

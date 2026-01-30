@@ -505,6 +505,11 @@ main() {
   # Load configuration
   load_config
 
+  # Check for deprecated external credential source
+  if ! credential_check_deprecated_source "${CONFIG[credential_source]:-prompt}"; then
+    exit 1
+  fi
+
   # Load provider
   load_provider "${CONFIG[provider]}" || exit 1
 
@@ -548,11 +553,9 @@ main() {
     fi
   fi
 
-  # Server selection
-  if [[ "${CONFIG[server_auto]:-true}" == "true" ]] && [[ -z "${CONFIG[selected_ip]:-}" ]]; then
-    find_best_server
-  elif [[ -z "${CONFIG[selected_ip]:-}" ]]; then
-    print_error "No server selected. Run velum-config to select a server."
+  # Server selection (manual only - no auto mode per SEC-001)
+  if [[ -z "${CONFIG[selected_ip]:-}" ]]; then
+    print_error "No server selected. Run 'velum config' to select a server."
     exit 1
   fi
 
@@ -571,30 +574,14 @@ main() {
   local account_credential=""
 
   if [[ "${CONFIG[provider]}" == "mullvad" ]]; then
-    # Check if vault has a credential available
-    if vault_is_initialized && vault_has_credentials; then
-      print_info "Vault has stored credentials."
-      if ask_yn "Use credential from vault?" "y"; then
-        local vault_pass
-        vault_pass=$(ask_password "Vault password")
-        if [[ -n "$vault_pass" ]]; then
-          local vault_cred
-          vault_cred=$(vault_get_credential "mullvad" "$vault_pass" 2>/dev/null) || true
-          if [[ -n "$vault_cred" ]]; then
-            account_credential="$vault_cred"
-          else
-            print_warn "No Mullvad credential in vault or wrong password"
-          fi
-          unset vault_cred vault_pass
-        fi
-      fi
-    fi
+    # Get credential from configured source (prompt, vault, or command)
+    local cred_source="${CONFIG[credential_source]:-prompt}"
+    local cred_command="${CONFIG[credential_command]:-}"
 
-    # Fall back to prompt if vault wasn't used
-    if [[ -z "$account_credential" ]]; then
-      echo "Mullvad requires your account number for WireGuard key registration."
-      account_credential=$(ask_password "Account number (16 digits)")
-    fi
+    account_credential=$(credential_get_from_source "mullvad" "$cred_source" "$cred_command") || {
+      print_error "Failed to get Mullvad account credential"
+      exit 1
+    }
 
     if [[ -z "$account_credential" ]]; then
       print_error "Account number is required for Mullvad WireGuard key exchange."

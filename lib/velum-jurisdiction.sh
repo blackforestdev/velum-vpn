@@ -23,6 +23,7 @@ _init_jurisdiction_data() {
     COUNTRY_ALLIANCE["US"]="5-Eyes"
     COUNTRY_ALLIANCE["USA"]="5-Eyes"
     COUNTRY_ALLIANCE["United States"]="5-Eyes"
+    COUNTRY_ALLIANCE["United States of America"]="5-Eyes"
     COUNTRY_ALLIANCE["GB"]="5-Eyes"
     COUNTRY_ALLIANCE["UK"]="5-Eyes"
     COUNTRY_ALLIANCE["United Kingdom"]="5-Eyes"
@@ -83,6 +84,7 @@ _init_jurisdiction_data() {
     COUNTRY_ALLIANCE["Lithuania"]="Blind"
     COUNTRY_ALLIANCE["CZ"]="Blind"
     COUNTRY_ALLIANCE["Czechia"]="Blind"
+    COUNTRY_ALLIANCE["Czech Republic"]="Blind"
     COUNTRY_ALLIANCE["AT"]="Blind"
     COUNTRY_ALLIANCE["Austria"]="Blind"
     COUNTRY_ALLIANCE["LU"]="Blind"
@@ -145,6 +147,8 @@ _init_jurisdiction_data() {
     COUNTRY_ALLIANCE["India"]="Blind"
     COUNTRY_ALLIANCE["KR"]="Blind"
     COUNTRY_ALLIANCE["Korea"]="Blind"
+    COUNTRY_ALLIANCE["South Korea"]="Blind"
+    COUNTRY_ALLIANCE["Republic of Korea"]="Blind"
     COUNTRY_ALLIANCE["TW"]="Blind"
     COUNTRY_ALLIANCE["Taiwan"]="Blind"
     COUNTRY_ALLIANCE["TH"]="Blind"
@@ -181,6 +185,7 @@ _init_jurisdiction_data() {
     COUNTRY_PRIVACY["Estonia"]="4"
     COUNTRY_PRIVACY["CZ"]="4"
     COUNTRY_PRIVACY["Czechia"]="4"
+    COUNTRY_PRIVACY["Czech Republic"]="4"
     COUNTRY_PRIVACY["AT"]="4"
     COUNTRY_PRIVACY["Austria"]="4"
     COUNTRY_PRIVACY["SE"]="4"
@@ -242,6 +247,8 @@ _init_jurisdiction_data() {
     COUNTRY_PRIVACY["Israel"]="3"
     COUNTRY_PRIVACY["KR"]="3"
     COUNTRY_PRIVACY["Korea"]="3"
+    COUNTRY_PRIVACY["South Korea"]="3"
+    COUNTRY_PRIVACY["Republic of Korea"]="3"
     COUNTRY_PRIVACY["TW"]="3"
     COUNTRY_PRIVACY["Taiwan"]="3"
     COUNTRY_PRIVACY["BR"]="3"
@@ -292,12 +299,12 @@ _init_jurisdiction_data() {
     COUNTRY_PRIVACY["US"]="1"
     COUNTRY_PRIVACY["USA"]="1"
     COUNTRY_PRIVACY["United States"]="1"
+    COUNTRY_PRIVACY["United States of America"]="1"
     COUNTRY_PRIVACY["GB"]="1"
     COUNTRY_PRIVACY["UK"]="1"
     COUNTRY_PRIVACY["United Kingdom"]="1"
     COUNTRY_PRIVACY["AU"]="1"
     COUNTRY_PRIVACY["Australia"]="1"
-    COUNTRY_PRIVACY["NZ"]="2"
     COUNTRY_PRIVACY["New Zealand"]="2"
 }
 
@@ -551,9 +558,41 @@ _init_provider_jurisdiction() {
 # Initialize provider data
 _init_provider_jurisdiction
 
+# Normalize provider string for reliable lookup (SEC-005)
+# Strips legal suffixes, punctuation, and normalizes whitespace
+# Example: "Zenlayer, Inc." → "zenlayer"
+normalize_provider() {
+    local p="$1"
+
+    # Handle empty input
+    [[ -z "$p" ]] && { echo ""; return; }
+
+    # Step 1: Convert to lowercase
+    p="${p,,}"
+
+    # Step 2: Remove commas
+    p="${p//,/}"
+
+    # Step 3: Remove periods and parentheses
+    p=$(echo "$p" | sed -E 's/[().]//g')
+
+    # Step 4: Strip legal suffixes anywhere in string
+    # inc, ltd, llc, bv, gmbh, ab, corp, co (with optional trailing s)
+    p=$(echo "$p" | sed -E 's/\b(inc|ltd|llc|bv|gmbh|ab|corp|co|services)\b//g')
+
+    # Step 5: Collapse multiple spaces to single space
+    p=$(echo "$p" | tr -s ' ')
+
+    # Step 6: Trim leading/trailing whitespace
+    p="${p## }"
+    p="${p%% }"
+
+    echo "$p"
+}
+
 # Get jurisdiction for a hosting provider
 # Returns: country code (US, GB, etc.) or "unknown"
-# Note: Input should already be lowercase; this function normalizes just in case
+# Uses normalize_provider() for reliable matching (SEC-005)
 get_provider_jurisdiction() {
     local provider="$1"
 
@@ -563,10 +602,17 @@ get_provider_jurisdiction() {
         return
     fi
 
-    # Normalize to lowercase for lookup (all keys are lowercase)
-    local provider_lower="${provider,,}"
+    # Normalize provider string for reliable lookup
+    local provider_normalized
+    provider_normalized=$(normalize_provider "$provider")
 
-    local jurisdiction="${PROVIDER_JURISDICTION[$provider_lower]:-}"
+    # Handle case where normalization results in empty string
+    if [[ -z "$provider_normalized" ]]; then
+        echo "unknown"
+        return
+    fi
+
+    local jurisdiction="${PROVIDER_JURISDICTION[$provider_normalized]:-}"
 
     echo "${jurisdiction:-unknown}"
 }
@@ -618,8 +664,9 @@ check_jurisdiction_mismatch() {
     server_alliance=$(get_alliance "$server_country")
     provider_alliance=$(get_alliance "$provider_jurisdiction")
 
-    # Check for dangerous mismatch: server claims non-5-Eyes but provider is 5-Eyes
-    if [[ "$server_alliance" == "Blind" ]] && is_provider_five_eyes "$provider"; then
+    # Check for dangerous mismatch: server claims non-5-Eyes but provider is 5-Eyes (SEC-006)
+    # Also flag Unknown country on 5-Eyes host as suspicious
+    if [[ "$server_alliance" == "Blind" || "$server_alliance" == "Unknown" ]] && is_provider_five_eyes "$provider"; then
         echo "5-EYES-HOSTED"
         return
     fi
@@ -685,10 +732,14 @@ calculate_recommendation_v2() {
         elif [[ "$mismatch" == "JURISDICTION-MISMATCH" ]]; then
             # Moderate penalty
             score=$((score - 2))
+        elif [[ "$mismatch" == "UNKNOWN" ]]; then
+            # Unknown provider jurisdiction - cannot verify hosting safety (SEC-007)
+            # Apply uncertainty penalty (-2) instead of verified safe penalty (-1)
+            score=$((score - 2))
+        else
+            # Provider verified safe - minor rented penalty
+            score=$((score - 1))
         fi
-
-        # Penalty for third-party hosted (not owned by VPN provider)
-        score=$((score - 1))
     elif [[ "$owned" == "unknown" ]]; then
         # Unknown ownership - apply small uncertainty penalty
         # Don't assume worst case, but don't give full confidence either
@@ -723,6 +774,7 @@ print_jurisdiction_legend() {
     echo "  Host:     ● owned | ○ rented | ? unknown | ⚑ 5-Eyes hosted (jurisdiction mismatch)"
     echo "  Detect:   ✓ clean | ⚠ partial | ✗ flagged | … pending"
     echo "  Rec:      ★★★ Recommended | ★★☆ Acceptable | ★☆☆ Caution | ☆☆☆ Avoid"
+    echo "  Sec:      A=Alliance P=Privacy O=Owned bonus U=Unknown ownership penalty M=Mismatch penalty L=Latency penalty"
 }
 
 # Convert provider/owned status to symbol

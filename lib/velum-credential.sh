@@ -562,6 +562,226 @@ cleanup_vault_key_cache() {
 }
 
 # ============================================================================
+# CREDENTIAL SOURCE (Phase 4)
+# ============================================================================
+
+# Get credential from configured source
+# Usage: credential_get_from_source <provider> [credential_source]
+# Returns: credential on stdout, or empty if not available
+# Exit codes: 0=success, 1=failure/cancelled
+#
+# Supported sources (security hardened):
+#   prompt  - Ask user interactively (default, most secure)
+#   vault   - Use encrypted vault (requires vault password)
+#
+# REMOVED (forensic exposure risk):
+#   command - External tools expose identifying metadata on device seizure
+credential_get_from_source() {
+  local provider="$1"
+  local source="${2:-prompt}"
+
+  case "$source" in
+    prompt)
+      # Ask user for credential
+      _credential_prompt_for_provider "$provider"
+      ;;
+
+    vault)
+      # Check if vault is available
+      if ! vault_is_initialized; then
+        log_error "Vault not initialized. Run 'velum credential init' first."
+        return 1
+      fi
+
+      if ! vault_has_credentials; then
+        log_error "No credentials in vault. Run 'velum credential store $provider' first."
+        return 1
+      fi
+
+      # Prompt for vault password and retrieve credential
+      local vault_pass
+      vault_pass=$(ask_password "Vault password")
+      if [[ -z "$vault_pass" ]]; then
+        log_error "Vault password required"
+        return 1
+      fi
+
+      local cred
+      cred=$(vault_get_credential "$provider" "$vault_pass" 2>/dev/null)
+      unset vault_pass
+
+      if [[ -z "$cred" ]]; then
+        log_error "No credential for $provider in vault or wrong password"
+        return 1
+      fi
+
+      echo "$cred"
+      ;;
+
+    command)
+      # SECURITY: External credential sources removed due to forensic exposure
+      print_error "External credential sources are no longer supported."
+      echo
+      print_error "Reason: External tools (Bitwarden, 1Password, pass, keychains)"
+      print_error "store identifying metadata that exposes you on device seizure."
+      echo
+      print_info "Velum now only supports:"
+      echo "  1) prompt - Enter credential each time (most secure)"
+      echo "  2) vault  - Velum's encrypted vault (no identifying metadata)"
+      echo
+      print_info "To reconfigure, run: velum config"
+      return 1
+      ;;
+
+    *)
+      log_error "Unknown credential source: $source"
+      return 1
+      ;;
+  esac
+}
+
+# Prompt user for credential based on provider type
+_credential_prompt_for_provider() {
+  local provider="$1"
+
+  case "$provider" in
+    mullvad)
+      echo "Enter your Mullvad account number (16 digits)." >&2
+      ask_password "Account number"
+      ;;
+    ivpn)
+      echo "Enter your IVPN account ID (format: i-XXXX-XXXX-XXXX)." >&2
+      ask_password "Account ID"
+      ;;
+    pia)
+      echo "Enter your PIA username." >&2
+      ask_password "Username"
+      ;;
+    *)
+      ask_password "Account credential for $provider"
+      ;;
+  esac
+}
+
+# ============================================================================
+# INTERACTIVE CREDENTIAL SOURCE SELECTION (Phase 4.x - Security Hardened)
+# ============================================================================
+#
+# SECURITY NOTE: External credential sources (password managers, OS keychains)
+# have been REMOVED due to forensic exposure risks that violate velum's threat model.
+#
+# Forensic exposure by tool:
+#   - Bitwarden CLI: Plaintext email, KDF params, org membership
+#   - 1Password CLI: Similar metadata exposure
+#   - pass/gopass:   GPG key IDs (correlatable via keyservers)
+#   - KeePassXC CLI: Database path, metadata
+#   - GNOME Keyring: Session-tied, persists across reboots
+#   - macOS Keychain: Apple ID integration, identity-tied
+#
+# Velum's vault stores ONLY: random salt + encrypted blob. No identifying information.
+
+# Check if config uses deprecated external credential source
+# Usage: credential_check_deprecated_source "$credential_source"
+# Returns: 0 = OK, 1 = deprecated source detected (hard fail)
+credential_check_deprecated_source() {
+  local source="${1:-prompt}"
+
+  if [[ "$source" == "command" ]]; then
+    echo
+    print_error "═══════════════════════════════════════════════════════════════════"
+    print_error "  SECURITY: External credential sources are no longer supported"
+    print_error "═══════════════════════════════════════════════════════════════════"
+    echo
+    print_error "Your configuration uses credential_source=command"
+    echo
+    print_warn "Reason: External tools (Bitwarden, 1Password, pass, keychains)"
+    print_warn "store identifying metadata that exposes you on device seizure:"
+    echo
+    echo "  • Bitwarden:    Plaintext email address, KDF parameters"
+    echo "  • 1Password:    Account metadata, team memberships"
+    echo "  • pass/gopass:  GPG key IDs (traceable via keyservers)"
+    echo "  • OS keychains: Tied to user identity, persists across reboots"
+    echo
+    print_info "Velum now only supports:"
+    echo "  1) prompt - Enter credential each time (most secure)"
+    echo "  2) vault  - Velum's encrypted vault (no identifying metadata)"
+    echo
+    print_info "To reconfigure: velum config"
+    echo
+    return 1
+  fi
+
+  return 0
+}
+
+# Interactive credential source selection wizard (security hardened)
+# Usage: credential_select_source_interactive <provider>
+# Sets: CONFIG[credential_source]
+# Returns: 0 = source selected, 1 = cancelled/error
+#
+# Only offers secure options:
+#   1) prompt - Ask each time (default, most secure)
+#   2) vault  - Velum's encrypted vault (Argon2id + AES-256-CBC/HMAC)
+credential_select_source_interactive() {
+  local provider="$1"
+
+  print_section "CREDENTIAL STORAGE"
+
+  echo "How should velum retrieve your account credentials?"
+  echo
+  echo "  1) Prompt each time     (default - most secure, no storage)"
+  echo "  2) Encrypted vault      (Velum's built-in AES-256 encrypted storage)"
+  echo
+  print_info "Note: External password managers are not supported due to"
+  print_info "forensic metadata exposure on device seizure."
+  echo
+
+  local choice
+  if ! read -r -p "Select [1-2, default=1]: " choice; then
+    echo -e "\n\nCancelled."
+    return 1
+  fi
+  choice="${choice:-1}"
+
+  case "$choice" in
+    1)
+      CONFIG[credential_source]="prompt"
+      CONFIG[credential_command]=""
+      print_ok "Credential source: Prompt each time"
+      echo "You will be asked for your account credential when needed."
+      return 0
+      ;;
+
+    2)
+      CONFIG[credential_source]="vault"
+      CONFIG[credential_command]=""
+      print_ok "Credential source: Encrypted vault"
+
+      # Check if vault is initialized
+      if ! vault_is_initialized 2>/dev/null; then
+        echo
+        print_info "Vault not yet initialized."
+        print_info "Run 'velum credential init' to set up the vault."
+        print_info "Then run 'velum credential store $provider' to add your credential."
+      else
+        if ! vault_has_credentials 2>/dev/null; then
+          echo
+          print_info "Run 'velum credential store $provider' to add your credential."
+        fi
+      fi
+      return 0
+      ;;
+
+    *)
+      print_error "Invalid selection. Using default (prompt)."
+      CONFIG[credential_source]="prompt"
+      CONFIG[credential_command]=""
+      return 0
+      ;;
+  esac
+}
+
+# ============================================================================
 # CLEANUP REGISTRATION
 # ============================================================================
 

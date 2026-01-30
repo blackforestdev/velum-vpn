@@ -288,7 +288,7 @@ migrate_legacy_config() {
 
 # Initialize colors if terminal supports them
 _init_colors() {
-  if [[ -t 1 ]]; then
+  if [[ -t 1 && -z "${NO_COLOR:-}" ]]; then
     local ncolors
     ncolors=$(tput colors 2>/dev/null || echo 0)
     if [[ -n "$ncolors" && "$ncolors" -ge 8 ]]; then
@@ -302,6 +302,18 @@ _init_colors() {
       C_BOLD=$(tput bold)
       C_DIM=$(tput dim)
       C_RESET=$(tput sgr0)
+    else
+      # Fallback to ANSI if tput isn't available but we're on a TTY
+      C_RED=$'\033[31m'
+      C_GREEN=$'\033[32m'
+      C_YELLOW=$'\033[33m'
+      C_BLUE=$'\033[34m'
+      C_MAGENTA=$'\033[35m'
+      C_CYAN=$'\033[36m'
+      C_WHITE=$'\033[37m'
+      C_BOLD=$'\033[1m'
+      C_DIM=$'\033[2m'
+      C_RESET=$'\033[0m'
     fi
   fi
 
@@ -464,15 +476,17 @@ ask_password() {
 
 # Ask for selection from list
 # Usage: choice=$(ask_choice "Select option" "Option A" "Option B" "Option C")
+# Note: All display output goes to stderr; only the selected value goes to stdout.
+# This allows safe capture with $(...) without menu contamination.
 ask_choice() {
   local prompt="$1"
   shift
   local options=("$@")
   local i
 
-  echo "$prompt"
+  echo "$prompt" >&2
   for i in "${!options[@]}"; do
-    echo "  $((i + 1)). ${options[$i]}"
+    echo "  $((i + 1)). ${options[$i]}" >&2
   done
 
   local choice
@@ -485,7 +499,7 @@ ask_choice() {
       echo "${options[$((choice - 1))]}"
       return 0
     fi
-    echo "Invalid choice. Please enter a number between 1 and ${#options[@]}."
+    echo "Invalid choice. Please enter a number between 1 and ${#options[@]}." >&2
   done
 }
 

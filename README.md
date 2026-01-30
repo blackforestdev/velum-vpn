@@ -338,7 +338,6 @@ CONFIG[port_forward]="false"
 
 # Server
 CONFIG[allow_geo]="false"
-CONFIG[server_auto]="true"
 CONFIG[max_latency]="0.05"
 CONFIG[selected_region]=""
 CONFIG[selected_ip]=""

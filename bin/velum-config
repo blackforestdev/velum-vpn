@@ -58,11 +58,14 @@ declare -A CONFIG=(
 
   # Server
   [allow_geo]="false"
-  [server_auto]="true"
-  [max_latency]="0.05"
+  [max_latency]="200"
   [selected_region]=""
   [selected_ip]=""
   [selected_hostname]=""
+
+  # Credential source (Phase 4)
+  [credential_source]=""
+  [credential_command]=""
 )
 
 # Configuration file path (from velum-core.sh)
@@ -112,11 +115,17 @@ save_config() {
     echo ""
     echo "# Server"
     echo "CONFIG[allow_geo]=\"${CONFIG[allow_geo]}\""
-    echo "CONFIG[server_auto]=\"${CONFIG[server_auto]}\""
     echo "CONFIG[max_latency]=\"${CONFIG[max_latency]}\""
     echo "CONFIG[selected_region]=\"${CONFIG[selected_region]}\""
     echo "CONFIG[selected_ip]=\"${CONFIG[selected_ip]}\""
     echo "CONFIG[selected_hostname]=\"${CONFIG[selected_hostname]}\""
+    echo ""
+    echo "# Credential source (Phase 4)"
+    echo "CONFIG[credential_source]=\"${CONFIG[credential_source]}\""
+    # Only save credential_command if using command source (avoid storing in plaintext otherwise)
+    if [[ "${CONFIG[credential_source]}" == "command" ]]; then
+      echo "CONFIG[credential_command]=\"${CONFIG[credential_command]}\""
+    fi
   } > "$CONFIG_FILE"
 
   chmod 600 "$CONFIG_FILE"
@@ -202,6 +211,41 @@ phase_authentication() {
   local auth_type
   auth_type=$(provider_auth_type)
 
+  # For account-based providers (Mullvad, IVPN), handle credential source selection
+  if [[ "$auth_type" == "account_number" ]]; then
+    local current_source="${CONFIG[credential_source]:-}"
+
+    if [[ -z "$current_source" ]]; then
+      # First-time setup - show wizard
+      if credential_select_source_interactive "${CONFIG[provider]}"; then
+        echo
+      else
+        # Wizard cancelled or failed - default to prompt mode
+        print_info "Using default: prompt for credentials each time."
+        CONFIG[credential_source]="prompt"
+        CONFIG[credential_command]=""
+        echo
+      fi
+    else
+      # Existing config - show current source and offer to change
+      local source_desc=""
+      case "$current_source" in
+        prompt) source_desc="Prompt each time (most secure)" ;;
+        vault)  source_desc="Encrypted vault" ;;
+        *)      source_desc="$current_source" ;;
+      esac
+
+      print_info "Credential source: $source_desc"
+
+      if ask_yn "Change credential source?" "n"; then
+        if credential_select_source_interactive "${CONFIG[provider]}"; then
+          echo
+        fi
+      fi
+      echo
+    fi
+  fi
+
   # Check for existing token in tmpfs (session storage)
   local token_status
   if credential_check_token "${CONFIG[provider]}"; then
@@ -209,6 +253,10 @@ phase_authentication() {
     token=$(credential_get_token "${CONFIG[provider]}")
     if [[ -n "$token" ]]; then
       print_ok "Valid session token found (stored in RAM)."
+      # Explain why vault/prompt isn't needed
+      if [[ "${CONFIG[credential_source]:-}" == "vault" ]]; then
+        print_info "Vault access not needed - session token is still valid."
+      fi
       CONFIG[token]="$token"
 
       if ! ask_yn "Use existing token?" "y"; then
@@ -297,54 +345,45 @@ _auth_username_password() {
 
 # Account number authentication (Mullvad style)
 _auth_account_number() {
-  local creds_file
-  creds_file="$(os_get_home)/.${CONFIG[provider]}_credentials"
+  local provider="${CONFIG[provider]}"
+  local max_attempts=3
+  local attempt=0
 
-  # Check if vault has credentials available
-  if vault_is_initialized && vault_has_credentials; then
-    print_info "Vault has stored credentials."
-    if ask_yn "Use credential from vault?" "y"; then
-      local vault_pass
-      vault_pass=$(ask_password "Vault password")
-      if [[ -n "$vault_pass" ]]; then
-        local vault_cred
-        vault_cred=$(vault_get_credential "${CONFIG[provider]}" "$vault_pass" 2>/dev/null) || true
-        if [[ -n "$vault_cred" ]]; then
-          CONFIG[username]="$vault_cred"
-        else
-          print_warn "No credential for ${CONFIG[provider]} in vault or wrong password"
-        fi
-        unset vault_cred vault_pass
+  # Get credential from configured source (prompt or vault)
+  # During initial config, default to prompt if not configured
+  local cred_source="${CONFIG[credential_source]:-prompt}"
+  local cred_command="${CONFIG[credential_command]:-}"
+
+  # Retry loop for vault password failures
+  while [[ $attempt -lt $max_attempts ]]; do
+    attempt=$((attempt + 1))
+
+    if CONFIG[username]=$(credential_get_from_source "$provider" "$cred_source" "$cred_command"); then
+      # Got credential successfully
+      if [[ -n "${CONFIG[username]:-}" ]]; then
+        break
       fi
     fi
-  fi
 
-  # Check legacy credentials file if vault wasn't used
-  if [[ -z "${CONFIG[username]:-}" ]] && [[ -f "$creds_file" ]]; then
-    print_info "Found credentials file: $creds_file"
-    CONFIG[username]=$(sed -n '1p' "$creds_file" 2>/dev/null || echo "")
-  fi
+    # Failed to get credential
+    if [[ $attempt -lt $max_attempts ]]; then
+      if [[ "$cred_source" == "vault" ]]; then
+        print_warn "Wrong password or no credential stored. Try again. (attempt $attempt/$max_attempts)"
+      else
+        print_warn "Failed to get credential. Try again. (attempt $attempt/$max_attempts)"
+      fi
+    else
+      print_error "Failed to get account credential after $max_attempts attempts."
+      exit 1
+    fi
+  done
 
-  # Still no credential? Prompt for it
   if [[ -z "${CONFIG[username]:-}" ]]; then
-    case "${CONFIG[provider]}" in
-      mullvad)
-        echo "Enter your Mullvad account number (16 digits)."
-        echo "You can find this at https://mullvad.net/account"
-        ;;
-      ivpn)
-        echo "Enter your IVPN account ID (format: i-XXXX-XXXX-XXXX)."
-        echo "You can find this at https://www.ivpn.net/clientarea"
-        ;;
-      *)
-        echo "Enter your account number/ID."
-        ;;
-    esac
-    echo
-    CONFIG[username]=$(ask_password "Account ID")
+    print_error "Account credential is required for authentication."
+    exit 1
   fi
 
-  # Authenticate
+  # Authenticate with provider API
   local auth_result
   if auth_result=$(provider_authenticate "${CONFIG[username]}" ""); then
     CONFIG[token]=$(echo "$auth_result" | jq -r '.access_token // .token')
@@ -353,11 +392,11 @@ _auth_account_number() {
     print_ok "Authentication successful!"
     [[ "$expiry" != "unknown" && "$expiry" != "null" ]] && echo "Token expires: $expiry"
   else
-    print_error "Authentication failed. Please check your account number."
+    print_error "Authentication failed. Please check your account credential."
     exit 1
   fi
 
-  # Clear account number from memory - use unset to fully remove
+  # Clear account credential from memory - use unset to fully remove
   unset 'CONFIG[username]'
 }
 
@@ -579,6 +618,7 @@ _extract_server_data() {
 
 # Helper: Check detection status for servers before display
 # Usage: _check_server_detection max_check entry1 entry2 ...
+# Entry format: score|det_sort|owned_sort|latency|id|name|ip|hostname|country_code|host_provider|owned|sec_detail
 _check_server_detection() {
   local max_check="${1:-30}"
   shift
@@ -593,7 +633,7 @@ _check_server_detection() {
     [[ $i -ge $max_check ]] && break
 
     local ip
-    ip=$(echo "$entry" | cut -d'|' -f4)
+    ip=$(echo "$entry" | cut -d'|' -f7)  # IP is field 7 in new format
     [[ -z "$ip" || "$ip" == "null" ]] && continue
 
     # Skip if already in our list or cached
@@ -631,26 +671,124 @@ _check_server_detection() {
   echo -e "\rProgress: Complete!              "
 }
 
+# Helper: Get numeric recommendation score from server entry for sorting
+# Returns: security score (0-6) and detail string
+# Note: Detection status is display-only and does NOT affect quality score.
+_compute_security_score() {
+  local entry="$1"
+  local latency id name ip hostname country_code host_provider owned
+  IFS='|' read -r latency id name ip hostname country_code host_provider owned <<< "$entry"
+
+  local alliance_score=0
+  local privacy_bonus=0
+  local ownership_bonus=0
+  local unknown_penalty=0
+  local mismatch_penalty=0
+  local latency_penalty=0
+
+  # Alliance scoring (0-3)
+  local alliance
+  alliance=$(get_alliance "$country_code")
+  case "$alliance" in
+    "Blind")   alliance_score=3 ;;
+    "14-Eyes") alliance_score=2 ;;
+    "9-Eyes")  alliance_score=1 ;;
+    "5-Eyes"|"Unknown") alliance_score=0 ;;
+  esac
+
+  # Privacy bonus (0-1) to avoid double-counting country
+  local privacy_rating
+  privacy_rating=$(get_privacy "$country_code")
+  if [[ "$privacy_rating" -ge 4 ]]; then
+    privacy_bonus=1
+  fi
+
+  # Ownership / mismatch penalties
+  if [[ "$owned" == "true" ]]; then
+    ownership_bonus=1
+  elif [[ "$owned" == "unknown" ]]; then
+    unknown_penalty=-1
+  else
+    local mismatch
+    mismatch=$(check_jurisdiction_mismatch "$country_code" "$host_provider" "$owned")
+    case "$mismatch" in
+      "5-EYES-HOSTED") mismatch_penalty=-3 ;;
+      "JURISDICTION-MISMATCH") mismatch_penalty=-2 ;;
+      "UNKNOWN") mismatch_penalty=-1 ;;
+      *) mismatch_penalty=0 ;;
+    esac
+  fi
+
+  # Small latency penalty for slow servers
+  if [[ "$latency" =~ ^[0-9]+$ ]] && [[ "$latency" -gt 200 ]]; then
+    latency_penalty=-1
+  fi
+
+  local total=$((alliance_score + privacy_bonus + ownership_bonus + unknown_penalty + mismatch_penalty + latency_penalty))
+  [[ $total -lt 0 ]] && total=0
+  [[ $total -gt 6 ]] && total=6
+
+  local detail="A${alliance_score}P${privacy_bonus}O${ownership_bonus}U${unknown_penalty}M${mismatch_penalty}L${latency_penalty}=${total}"
+  echo "${total}|${detail}"
+}
+
+# Map security score (0-6) to recommendation tier (0-3)
+_security_score_to_rec() {
+  local score="${1:-0}"
+  if [[ "$score" -ge 4 ]]; then
+    echo "3"
+  elif [[ "$score" -ge 2 ]]; then
+    echo "2"
+  elif [[ "$score" -ge 1 ]]; then
+    echo "1"
+  else
+    echo "0"
+  fi
+}
+
+# Detection sort value (for optional deprioritization)
+_detection_sort_value() {
+  local ip="$1"
+  local status
+  status=$(get_cached_detection "$ip" 2>/dev/null || echo "")
+  case "$status" in
+    "clean") echo "0" ;;
+    "partial") echo "1" ;;
+    "flagged") echo "2" ;;
+    *) echo "1" ;;  # unknown treated as partial for ordering
+  esac
+}
+
 # Helper: Display enhanced server table
-# Usage: _display_server_table max_display entry1 entry2 entry3 ...
+# Usage: _display_server_table max_display sort_mode entry1 entry2 entry3 ...
+# sort_mode: "quality" or "speed"
+# Entry format: score|det_sort|owned_sort|latency|id|name|ip|hostname|country_code|host_provider|owned|sec_detail
 _display_server_table() {
   local max_display="${1:-30}"
-  shift
+  local sort_mode="${2:-speed}"
+  shift 2
   local entries=("$@")
 
+  local sort_desc
+  case "$sort_mode" in
+    "quality") sort_desc="sorted by security score, then latency" ;;
+    "detect")  sort_desc="sorted by detectability, then security" ;;
+    *)         sort_desc="sorted by latency" ;;
+  esac
+
   echo
-  echo "Server Selection (sorted by latency):"
+  echo "Server Selection ($sort_desc):"
   echo "──────────────────────────────────────────────────────────────────────────────────────────"
-  printf "  %-3s %7s   %-24s %-8s %-5s %-4s %-3s %s\n" "#" "Latency" "Location" "Alliance" "Priv" "Host" "Det" "Rec"
+  printf "  %-3s %7s   %-24s %-8s %-5s %-4s %-3s %-18s %s\n" "#" "Latency" "Location" "Alliance" "Priv" "Host" "Det" "Sec" "Rec"
   echo "──────────────────────────────────────────────────────────────────────────────────────────"
 
   local i=1
   for entry in "${entries[@]}"; do
     [[ $i -gt $max_display ]] && break
 
-    # Parse entry: latency|id|name|ip|hostname|country_code|host_provider|owned
-    local latency id name ip hostname country_code host_provider owned
-    IFS='|' read -r latency id name ip hostname country_code host_provider owned <<< "$entry"
+    # Parse entry: score|det_sort|owned_sort|latency|id|name|ip|hostname|country_code|host_provider|owned|sec_detail
+    local score det_sort owned_sort latency id name ip hostname country_code host_provider owned sec_detail
+    IFS='|' read -r score det_sort owned_sort latency id name ip hostname country_code host_provider owned sec_detail <<< "$entry"
 
     # Get jurisdiction info
     local alliance privacy_rating privacy_bar
@@ -669,16 +807,11 @@ _display_server_table() {
       detection_sym=$(detection_to_symbol "$detection")
     else
       detection_sym="…"
-      detection="checking"
     fi
 
-    # Calculate recommendation (using v2 with provider jurisdiction)
+    # Use pre-computed security score for recommendation tier
     local rec rec_stars
-    if [[ "$detection" != "checking" ]]; then
-      rec=$(calculate_recommendation_v2 "$country_code" "$privacy_rating" "$detection" "$host_provider" "$owned")
-    else
-      rec=$(calculate_recommendation_v2 "$country_code" "$privacy_rating" "clean" "$host_provider" "$owned")
-    fi
+    rec=$(_security_score_to_rec "$score")
     rec_stars=$(recommendation_to_stars "$rec")
 
     # Format latency
@@ -693,7 +826,7 @@ _display_server_table() {
     local loc_display="${name}"
     [[ ${#loc_display} -gt 24 ]] && loc_display="${loc_display:0:21}..."
 
-    # Color code based on recommendation
+    # Color entire row based on recommendation tier
     local row_color=""
     local reset="${C_RESET:-}"
     case "$rec" in
@@ -703,8 +836,8 @@ _display_server_table() {
       0) row_color="${C_RED:-}" ;;
     esac
 
-    printf "%s%3d. %7s   %-24s %-8s %s  %s    %s   %s%s\n" \
-      "$row_color" "$i" "$latency_fmt" "$loc_display" "$alliance" "$privacy_bar" "$host_sym" "$detection_sym" "$rec_stars" "$reset"
+    printf "%s%3d. %7s   %-24s %-8s %s  %s    %s   %-18s %s%s\n" \
+      "$row_color" "$i" "$latency_fmt" "$loc_display" "$alliance" "$privacy_bar" "$host_sym" "$detection_sym" "$sec_detail" "$rec_stars" "$reset"
 
     ((i++)) || true
   done
@@ -741,160 +874,576 @@ phase_server() {
     echo
   fi
 
-  # Server selection method
-  echo "Server selection:"
-  echo "  1. Auto (lowest latency, best recommendation)"
-  echo "  2. Manual selection (view all servers with quality info)"
+  # Server priority selection (manual only - no auto mode per SEC-001)
+  echo "Server priority:"
+  echo "  1) Quality       (jurisdiction + ownership; detection optional)"
+  echo "  2) Speed         (lowest latency first)"
+  echo "  3) Detectability (clean IPs first, then security)"
   echo
 
-  local method
-  method=$(ask_choice "Select method" "Auto (recommended)" "Manual selection")
+  local priority_choice
+  while true; do
+    if ! read -r -p "Select [1-3, default=1]: " priority_choice; then
+      echo -e "\n\nCancelled."
+      exit 130
+    fi
+    # Default to Quality if empty
+    [[ -z "$priority_choice" ]] && priority_choice="1"
+    if [[ "$priority_choice" =~ ^[123]$ ]]; then
+      break
+    fi
+    print_error "Invalid selection."
+  done
 
-  if [[ "$method" == "Auto"* ]]; then
-    CONFIG[server_auto]="true"
-    print_info "Will select server with best combination of latency and quality."
-  else
-    CONFIG[server_auto]="false"
+  local sort_by_quality=false
+  [[ "$priority_choice" == "1" ]] && sort_by_quality=true
+  local sort_by_detect=false
+  [[ "$priority_choice" == "3" ]] && sort_by_detect=true
 
-    # Latency threshold
-    local threshold
-    threshold=$(ask_input "Maximum latency (ms)" "200")
-    # Convert to ms if user entered seconds (e.g., 0.2)
+  # Optional detection deprioritization (quality mode only)
+  local deprioritize_detection=false
+  if [[ "$sort_by_quality" == "true" && "$sort_by_detect" == "false" ]]; then
+    if ask_yn "Deprioritize detected VPN IPs in quality sort?" "n"; then
+      deprioritize_detection=true
+    fi
+    echo
+  fi
+
+  # Latency threshold (0 = show all)
+  local threshold default_threshold
+  default_threshold="${CONFIG[max_latency]:-200}"
+  if [[ "$default_threshold" =~ ^0\.[0-9]+$ ]]; then
+    default_threshold=$(awk "BEGIN {printf \"%.0f\", $default_threshold * 1000}")
+  fi
+  while true; do
+    threshold=$(ask_input "Maximum latency in ms (0 = show all)" "$default_threshold")
+    if [[ -z "$threshold" ]]; then
+      threshold="$default_threshold"
+    fi
     if [[ "$threshold" =~ ^0\.[0-9]+$ ]]; then
       threshold=$(awk "BEGIN {printf \"%.0f\", $threshold * 1000}")
     fi
-    CONFIG[max_latency]="$threshold"
+    if [[ "$threshold" =~ ^[0-9]+$ ]]; then
+      break
+    fi
+    print_error "Invalid latency value. Use a number in milliseconds (e.g., 200) or 0 for all."
+  done
+  CONFIG[max_latency]="$threshold"
 
-    # Get and display server list
-    echo
-    echo "Fetching server list and testing latency (threshold: ${threshold}ms)..."
-    echo
+  # Get and display server list
+  echo
 
-    local filters=""
-    [[ "${CONFIG[allow_geo]}" != "true" ]] && filters="--geo false"
-    [[ "${CONFIG[port_forward]}" == "true" ]] && filters="$filters --port-forward true"
+  local filters=""
+  [[ "${CONFIG[allow_geo]}" != "true" ]] && filters="--geo false"
+  [[ "${CONFIG[port_forward]}" == "true" ]] && filters="$filters --port-forward true"
 
-    local servers
-    # shellcheck disable=SC2086
-    servers=$(provider_filter_servers $filters)
+  # Fetch server list with visible progress (API call can take a few seconds)
+  printf "  Fetching server list from %s..." "$(provider_name)"
+  local servers
+  local spinner_pid=""
+  (while true; do printf "."; sleep 0.2; done) & spinner_pid=$!
+  # shellcheck disable=SC2086
+  servers=$(provider_filter_servers $filters)
+  if [[ -n "$spinner_pid" ]]; then
+    kill "$spinner_pid" 2>/dev/null || true
+    wait "$spinner_pid" 2>/dev/null || true
+  fi
+  printf " done.\n"
+  echo
 
-    # Collect all servers with latency
-    local server_data=()
+    # Preparing server list (show progress + spinner)
+    echo -n "  Preparing server list..."
+    local prep_spinner_pid=""
+    (while true; do printf "."; sleep 0.2; done) & prep_spinner_pid=$!
+
+    # =========================================================================
+    # PARALLEL LATENCY TESTING
+    # =========================================================================
+    #
+    # OPTIMIZATION NOTE: This uses parallel ping testing to reduce wait time.
+    # Sequential testing of all servers @ 2-3s each would be very slow.
+    # Parallel testing with 15 concurrent pings completes much faster.
+    #
+    # FUTURE OPTIMIZATION: fping (https://fping.org) would be ideal here -
+    # it can ping hundreds of hosts in a single syscall. Unfortunately,
+    # fping has been locked in academic purgatory since Roland Schemers
+    # wrote it at Stanford in 1992. Perhaps someday someone will write a
+    # modern, permissively-licensed multi-ping tool. Until then, we make
+    # do with parallel bash pings.
+    #
+    # TODO: Pre-filter servers by region before latency testing. If user
+    # is in North America, no need to test 30 Australian servers.
+    # =========================================================================
+
+    # First pass: collect server metadata without testing (NO arbitrary limit)
+    local server_info=()
+    local prep_count=0
+    local prep_total=0
+    prep_total=$(echo "$servers" | jq -r 'length' 2>/dev/null || echo 0)
 
     while IFS= read -r server; do
-      local extracted id name ip hostname country_code host_provider owned latency
+      local extracted id name ip hostname country_code host_provider owned
 
       extracted=$(_extract_server_data "$server" "${CONFIG[provider]}")
       IFS='|' read -r id name ip hostname country_code host_provider owned <<< "$extracted"
 
       [[ -z "$ip" || "$ip" == "null" ]] && continue
 
-      # Test latency
-      # TODO: UX improvement - show "(skip)" suffix for servers exceeding threshold
-      #       Currently displays "207ms" even when threshold is 190ms, which is confusing.
-      #       Fix: move echo after threshold check, show "${latency}ms (skip)" if exceeded.
-      echo -n "  Testing $name... "
-      latency=$(provider_test_latency "$id" 2>/dev/null || echo "9999")
-      if [[ "$latency" =~ ^[0-9.]+$ ]]; then
-        # Convert to integer ms if it's a float
-        latency=$(printf "%.0f" "$latency" 2>/dev/null || echo "$latency")
-        echo "${latency}ms"
-
-        # Only include if within threshold
-        if [[ "$latency" -le "$threshold" ]]; then
-          # Store: latency|id|name|ip|hostname|country_code|host_provider|owned
-          server_data+=("${latency}|${id}|${name}|${ip}|${hostname}|${country_code}|${host_provider}|${owned}")
+      # Store server info for parallel testing
+      # Format: id|name|ip|hostname|country_code|host_provider|owned
+      server_info+=("${id}|${name}|${ip}|${hostname}|${country_code}|${host_provider}|${owned}")
+      prep_count=$((prep_count + 1))
+      if [[ $((prep_count % 50)) -eq 0 ]]; then
+        if [[ "$prep_total" -gt 0 ]]; then
+          printf "\r  Preparing server list... %d/%d" "$prep_count" "$prep_total"
+        else
+          printf "\r  Preparing server list... %d" "$prep_count"
         fi
-      else
-        echo "timeout"
       fi
+    done < <(echo "$servers" | jq -c '.[]')
 
-    done < <(echo "$servers" | jq -c '.[]' | head -80)
-
-    if [[ ${#server_data[@]} -eq 0 ]]; then
-      print_warn "No servers found within ${threshold}ms latency threshold."
-      print_info "Try increasing the maximum latency value."
-      CONFIG[server_auto]="true"
-      return
+    local total_servers=${#server_info[@]}
+    if [[ -n "$prep_spinner_pid" ]]; then
+      kill "$prep_spinner_pid" 2>/dev/null || true
+      wait "$prep_spinner_pid" 2>/dev/null || true
     fi
-
-    # Sort by latency
-    IFS=$'\n' sorted_data=($(printf '%s\n' "${server_data[@]}" | sort -t'|' -k1 -n))
-    unset IFS
-
-    echo
-    echo "Found ${#sorted_data[@]} servers within ${threshold}ms threshold."
-    echo
-
-    # Check detection status for all servers before display
-    local server_count=${#sorted_data[@]}
-    _check_server_detection "$server_count" "${sorted_data[@]}"
+    if [[ "$prep_total" -gt 0 ]]; then
+      printf "\r  Preparing server list... %d/%d\n" "$prep_count" "$prep_total"
+    else
+      printf "\r  Preparing server list... %d\n" "$prep_count"
+    fi
+    echo "  Prepared $total_servers servers."
     echo
 
-    # Display enhanced table with detection results
-    _display_server_table "$server_count" "${sorted_data[@]}"
+    local ping_count="${VELUM_PING_COUNT:-1}"
+    local ping_timeout="${VELUM_PING_TIMEOUT:-1}"
+    echo "  Testing latency to $total_servers servers (ping count=${ping_count}, timeout=${ping_timeout}s)..."
 
-    # Build selection arrays
-    local region_ids=()
-    local region_names=()
-    local region_ips=()
-    local region_hostnames=()
+    # Create temp directory for parallel results
+    local results_dir
+    results_dir=$(mktemp -d) || { echo "ERROR: mktemp -d failed"; exit 1; }
 
-    local i=1
-    for entry in "${sorted_data[@]}"; do
-      local latency id name ip hostname country_code host_provider owned
-      IFS='|' read -r latency id name ip hostname country_code host_provider owned <<< "$entry"
-      region_ids+=("$id")
-      region_names+=("$name")
-      region_ips+=("$ip")
-      region_hostnames+=("$hostname")
-      ((i++)) || true
+    # Parallel latency testing
+    # Note: Using job array approach for bash 4.x compatibility
+    # (wait -n is bash 4.3+ and unreliable across distributions)
+    local max_concurrent=15
+    local tested=0
+    local pids=()
+    local id name ip hostname country_code host_provider owned
+    local idx=0
+
+    for info in "${server_info[@]}"; do
+      IFS='|' read -r id name ip hostname country_code host_provider owned <<< "$info"
+      idx=$((idx + 1))
+
+      # Background ping job - writes result to temp file
+      # Note: Subshell uses explicit bash to avoid set -e inheritance issues
+      bash -c '
+        ip="$1"
+        results_dir="$2"
+        idx="$3"
+        id="$4"
+        name="$5"
+        hostname="$6"
+        country_code="$7"
+        host_provider="$8"
+        owned="$9"
+        ping_count="${10}"
+        ping_timeout="${11}"
+
+        latency=""
+        if [[ "$(uname)" == "Darwin" ]]; then
+          latency=$(ping -c "$ping_count" -t "$ping_timeout" "$ip" 2>/dev/null | grep "time=" | sed "s/.*time=\([0-9.]*\).*/\1/")
+        else
+          latency=$(ping -c "$ping_count" -W "$ping_timeout" "$ip" 2>/dev/null | grep "time=" | sed "s/.*time=\([0-9.]*\).*/\1/")
+        fi
+
+        if [[ -n "$latency" && "$latency" =~ ^[0-9.]+$ ]]; then
+          latency=$(printf "%.0f" "$latency" 2>/dev/null || echo "9999")
+        else
+          latency="9999"
+        fi
+
+        # Write result to temp file (atomic via rename)
+        echo "${latency}|${id}|${name}|${ip}|${hostname}|${country_code}|${host_provider}|${owned}" > "${results_dir}/${idx}.tmp"
+        mv "${results_dir}/${idx}.tmp" "${results_dir}/${idx}.result"
+      ' _ "$ip" "$results_dir" "$idx" "$id" "$name" "$hostname" "$country_code" "$host_provider" "$owned" "$ping_count" "$ping_timeout" &
+
+      pids+=($!)
+      tested=$((tested + 1))
+
+      # Show progress
+      printf "\r  Progress: %d/%d " "$tested" "$total_servers"
+
+      # Wait for a batch if at max concurrency
+      if [[ ${#pids[@]} -ge $max_concurrent ]]; then
+        # Wait for all current batch to complete
+        for pid in "${pids[@]}"; do
+          wait "$pid" 2>/dev/null || true
+        done
+        pids=()
+      fi
     done
 
-    local choice
-    if ! read -r -p "Select server number [1-$((i-1))]: " choice; then
-      echo -e "\n\nCancelled."
-      exit 130
-    fi
+    # Wait for remaining jobs in the last batch
+    for pid in "${pids[@]}"; do
+      wait "$pid" 2>/dev/null || true
+    done
+    printf "\r  Progress: %d/%d - Complete!        \n" "$total_servers" "$total_servers"
 
-    if [[ "$choice" =~ ^[0-9]+$ ]] && [[ "$choice" -ge 1 ]] && [[ "$choice" -lt "$i" ]]; then
-      local idx=$((choice - 1))
-      CONFIG[selected_region]="${region_ids[$idx]}"
-      CONFIG[selected_ip]="${region_ips[$idx]}"
-      CONFIG[selected_hostname]="${region_hostnames[$idx]}"
-      print_ok "Selected: ${region_names[$idx]}"
+    # Collect all results (no filter yet)
+    local all_server_data=()
+    for result_file in "${results_dir}"/*.result; do
+      [[ -f "$result_file" ]] || continue
 
-      # Check for jurisdiction mismatch warning
-      local selected_entry="${sorted_data[$idx]}"
-      local _lat _id _name _ip _host _country_code _host_provider _owned
-      IFS='|' read -r _lat _id _name _ip _host _country_code _host_provider _owned <<< "$selected_entry"
+      local result
+      result=$(cat "$result_file")
+      local latency
+      latency=$(echo "$result" | cut -d'|' -f1)
 
-      if [[ "$_owned" == "false" && -n "$_host_provider" && "$_host_provider" != "unknown" ]]; then
-        local mismatch
-        mismatch=$(check_jurisdiction_mismatch "$_country_code" "$_host_provider" "$_owned")
-
-        if [[ "$mismatch" == "5-EYES-HOSTED" ]]; then
-          # Get display name from the entry
-          local display_location="$_name"
-          echo
-          print_warn "JURISDICTION WARNING: This server claims '$display_location'"
-          print_warn "but is hosted by $_host_provider (US-based, 5-Eyes jurisdiction)."
-          print_warn "Traffic may route through US infrastructure despite the claimed location."
-          echo
-          if ! ask_yn "Continue with this selection?" "n"; then
-            print_info "Server selection cancelled. Using auto mode."
-            CONFIG[server_auto]="true"
-            CONFIG[selected_region]=""
-            CONFIG[selected_ip]=""
-            CONFIG[selected_hostname]=""
-          fi
-        fi
+      # Include servers with valid latency (even 9999 = timeout)
+      if [[ "$latency" =~ ^[0-9]+$ ]]; then
+        all_server_data+=("$result")
       fi
-    else
-      print_error "Invalid selection. Using auto mode."
-      CONFIG[server_auto]="true"
+    done
+
+    # Cleanup temp directory
+    rm -rf "$results_dir"
+
+    if [[ ${#all_server_data[@]} -eq 0 ]]; then
+      print_error "No servers responded to ping. Check your network connection."
+      exit 1
     fi
-  fi
+
+    echo
+    echo "Received responses from ${#all_server_data[@]} servers."
+    echo
+
+    # Optional debug: latency distribution and top servers
+    if [[ "${VELUM_DEBUG_LATENCY:-0}" == "1" ]]; then
+      local total_count=${#all_server_data[@]}
+      local timeout_count=0
+      local under_200=0
+      for entry in "${all_server_data[@]}"; do
+        local latency
+        latency=$(echo "$entry" | cut -d'|' -f1)
+        if [[ "$latency" == "9999" ]]; then
+          timeout_count=$((timeout_count + 1))
+        elif [[ "$latency" =~ ^[0-9]+$ && "$latency" -le 200 ]]; then
+          under_200=$((under_200 + 1))
+        fi
+      done
+
+      echo "DEBUG: latency summary"
+      echo "  total tested:   $total_count"
+      echo "  <= 200ms:       $under_200"
+      echo "  timeouts:       $timeout_count"
+      echo
+
+      echo "DEBUG: top 100 fastest (latency | location | hostname)"
+      printf '%s\n' "${all_server_data[@]}" | sort -t'|' -k1,1n | head -100 | \
+        while IFS='|' read -r latency id name ip hostname country_code host_provider owned; do
+          printf "  %4sms | %-26s | %s\n" "$latency" "$name" "$hostname"
+        done
+      echo
+
+      echo "DEBUG: Zurich entries (latency | location | hostname)"
+      printf '%s\n' "${all_server_data[@]}" | \
+        while IFS='|' read -r latency id name ip hostname country_code host_provider owned; do
+          if [[ "$name" == *"Zurich"* ]] || [[ "$hostname" == *"zrh"* ]] || [[ "$country_code" == "CH" ]]; then
+            printf "  %4sms | %-26s | %s\n" "$latency" "$name" "$hostname"
+          fi
+        done
+      echo
+    fi
+
+    # Apply latency threshold (0 = show all)
+    local filtered_server_data=()
+    if [[ "$threshold" -gt 0 ]]; then
+      for entry in "${all_server_data[@]}"; do
+        local latency
+        latency=$(echo "$entry" | cut -d'|' -f1)
+        if [[ "$latency" -le "$threshold" ]]; then
+          filtered_server_data+=("$entry")
+        fi
+      done
+      echo "Latency filter: <= ${threshold}ms → ${#filtered_server_data[@]} of ${#all_server_data[@]} servers."
+      if [[ ${#filtered_server_data[@]} -eq 0 ]]; then
+        print_warn "No servers met the latency threshold. Showing all servers instead."
+        filtered_server_data=("${all_server_data[@]}")
+      elif [[ ${#filtered_server_data[@]} -lt 20 && "${VELUM_STRICT_LATENCY:-0}" != "1" ]]; then
+        print_warn "Only ${#filtered_server_data[@]} servers met the latency threshold."
+        print_warn "ICMP latency can be unreliable or rate-limited."
+        print_info "Showing all servers instead (set VELUM_STRICT_LATENCY=1 to enforce)."
+        filtered_server_data=("${all_server_data[@]}")
+      else
+        echo "Tip: Enter 0 at the latency prompt to show all servers."
+      fi
+      echo
+    else
+      filtered_server_data=("${all_server_data[@]}")
+    fi
+
+    # =========================================================================
+    # PRE-COMPUTE SECURITY SCORES (PERF-001)
+    # =========================================================================
+    # Compute scores ONCE here, not on every sort. New format:
+    # score|det_sort|owned_sort|latency|id|name|ip|hostname|country_code|host_provider|owned|sec_detail
+    # owned_sort: 1=owned, 2=unknown, 3=rented (SEC-004)
+    echo -n "Pre-computing security scores..."
+    local scored_server_data=()
+    for entry in "${filtered_server_data[@]}"; do
+      local latency id name ip hostname country_code host_provider owned
+      IFS='|' read -r latency id name ip hostname country_code host_provider owned <<< "$entry"
+
+      # Calculate security score + detail
+      local score_detail score sec_detail
+      score_detail=$(_compute_security_score "$entry")
+      score=$(echo "$score_detail" | cut -d'|' -f1)
+      sec_detail=$(echo "$score_detail" | cut -d'|' -f2)
+
+      # Calculate owned_sort for tie-breaking (SEC-004)
+      local owned_sort
+      case "$owned" in
+        true)    owned_sort=1 ;;
+        unknown) owned_sort=2 ;;
+        *)       owned_sort=3 ;;  # false or anything else = rented
+      esac
+
+      # det_sort defaults to 0 (ignored unless deprioritization enabled)
+      local det_sort=0
+
+      # New format: score|det_sort|owned_sort|latency|id|name|ip|hostname|country_code|host_provider|owned|sec_detail
+      scored_server_data+=("${score}|${det_sort}|${owned_sort}|${entry}|${sec_detail}")
+    done
+    echo " done."
+
+    # Sort based on priority mode (instant with pre-computed scores)
+    local sorted_data=()
+    if [[ "$sort_by_quality" == "true" ]]; then
+      # Sort by: score (desc), det_sort (asc), owned_sort (asc), latency (asc)
+      IFS=$'\n' sorted_data=($(printf '%s\n' "${scored_server_data[@]}" | sort -t'|' -k1,1rn -k2,2n -k3,3n -k4,4n))
+      unset IFS
+    elif [[ "$sort_by_detect" == "true" ]]; then
+      # Sort by: det_sort (asc), score (desc), owned_sort (asc), latency (asc)
+      IFS=$'\n' sorted_data=($(printf '%s\n' "${scored_server_data[@]}" | sort -t'|' -k2,2n -k1,1rn -k3,3n -k4,4n))
+      unset IFS
+    else
+      # Sort by latency only (field 4 in new format)
+      IFS=$'\n' sorted_data=($(printf '%s\n' "${scored_server_data[@]}" | sort -t'|' -k4,4n))
+      unset IFS
+    fi
+
+    # Check detection status for top servers AFTER sorting (UX-002)
+    local detection_check_count=100
+    [[ ${#sorted_data[@]} -lt $detection_check_count ]] && detection_check_count=${#sorted_data[@]}
+    _check_server_detection "$detection_check_count" "${sorted_data[@]}"
+    echo
+
+    # Optional detection deprioritization (quality mode only)
+    if [[ "$sort_by_quality" == "true" && "$deprioritize_detection" == "true" ]]; then
+      local updated_scored=()
+      for entry in "${scored_server_data[@]}"; do
+        local score det_sort owned_sort latency id name ip hostname country_code host_provider owned sec_detail
+        IFS='|' read -r score det_sort owned_sort latency id name ip hostname country_code host_provider owned sec_detail <<< "$entry"
+        det_sort=$(_detection_sort_value "$ip")
+        updated_scored+=("${score}|${det_sort}|${owned_sort}|${latency}|${id}|${name}|${ip}|${hostname}|${country_code}|${host_provider}|${owned}|${sec_detail}")
+      done
+      scored_server_data=("${updated_scored[@]}")
+      IFS=$'\n' sorted_data=($(printf '%s\n' "${scored_server_data[@]}" | sort -t'|' -k1,1rn -k2,2n -k3,3n -k4,4n))
+      unset IFS
+    fi
+
+    # Detectability mode: update det_sort and re-sort
+    if [[ "$sort_by_detect" == "true" ]]; then
+      local updated_scored=()
+      for entry in "${scored_server_data[@]}"; do
+        local score det_sort owned_sort latency id name ip hostname country_code host_provider owned sec_detail
+        IFS='|' read -r score det_sort owned_sort latency id name ip hostname country_code host_provider owned sec_detail <<< "$entry"
+        det_sort=$(_detection_sort_value "$ip")
+        updated_scored+=("${score}|${det_sort}|${owned_sort}|${latency}|${id}|${name}|${ip}|${hostname}|${country_code}|${host_provider}|${owned}|${sec_detail}")
+      done
+      scored_server_data=("${updated_scored[@]}")
+      IFS=$'\n' sorted_data=($(printf '%s\n' "${scored_server_data[@]}" | sort -t'|' -k2,2n -k1,1rn -k3,3n -k4,4n))
+      unset IFS
+    fi
+
+    # =========================================================================
+    # SERVER SELECTION LOOP (allows re-filtering without re-pinging)
+    # =========================================================================
+    local max_display=50  # Display limit (not test limit)
+    local current_sort_mode
+    if [[ "$sort_by_quality" == "true" ]]; then
+      current_sort_mode="quality"
+    elif [[ "$sort_by_detect" == "true" ]]; then
+      current_sort_mode="detect"
+    else
+      current_sort_mode="speed"
+    fi
+
+    while true; do
+      # Apply display limit
+      local display_data=("${sorted_data[@]:0:$max_display}")
+      local total_available=${#sorted_data[@]}
+
+      echo
+      echo "Showing ${#display_data[@]} of $total_available servers."
+
+      # Display enhanced table with detection results
+      _display_server_table "${#display_data[@]}" "$current_sort_mode" "${display_data[@]}"
+
+      # Build selection arrays for current display
+      # Entry format: score|det_sort|owned_sort|latency|id|name|ip|hostname|country_code|host_provider|owned|sec_detail
+      local region_ids=()
+      local region_names=()
+      local region_ips=()
+      local region_hostnames=()
+
+      local i=1
+      for entry in "${display_data[@]}"; do
+        local score det_sort owned_sort latency id name ip hostname country_code host_provider owned sec_detail
+        IFS='|' read -r score det_sort owned_sort latency id name ip hostname country_code host_provider owned sec_detail <<< "$entry"
+        region_ids+=("$id")
+        region_names+=("$name")
+        region_ips+=("$ip")
+        region_hostnames+=("$hostname")
+        ((i++)) || true
+      done
+
+      # Selection prompt with options
+      echo
+      echo "Options: [1-${#display_data[@]}] select server, [m] show more, [q] quality sort, [s] speed sort, [d] detectability sort"
+      local choice
+      if ! read -r -p "Selection: " choice; then
+        echo -e "\n\nCancelled."
+        exit 130
+      fi
+
+      case "$choice" in
+        m|M)
+          max_display=$((max_display + 50))
+          [[ $max_display -gt $total_available ]] && max_display=$total_available
+          # Check detection for newly visible servers (uses cache, only checks uncached)
+          local check_count=$((max_display + 50))
+          [[ $check_count -gt ${#sorted_data[@]} ]] && check_count=${#sorted_data[@]}
+          _check_server_detection "$check_count" "${sorted_data[@]}"
+          if [[ "$current_sort_mode" == "quality" && "$deprioritize_detection" == "true" ]]; then
+            local updated_scored=()
+            for entry in "${scored_server_data[@]}"; do
+              local score det_sort owned_sort latency id name ip hostname country_code host_provider owned sec_detail
+              IFS='|' read -r score det_sort owned_sort latency id name ip hostname country_code host_provider owned sec_detail <<< "$entry"
+              det_sort=$(_detection_sort_value "$ip")
+              updated_scored+=("${score}|${det_sort}|${owned_sort}|${latency}|${id}|${name}|${ip}|${hostname}|${country_code}|${host_provider}|${owned}|${sec_detail}")
+            done
+            scored_server_data=("${updated_scored[@]}")
+            IFS=$'\n' sorted_data=($(printf '%s\n' "${scored_server_data[@]}" | sort -t'|' -k1,1rn -k2,2n -k3,3n -k4,4n))
+            unset IFS
+          fi
+          continue
+          ;;
+        q|Q)
+          if [[ "$current_sort_mode" != "quality" ]]; then
+            current_sort_mode="quality"
+            # Re-sort by quality - instant with pre-computed scores (PERF-001)
+            # Sort by: score (desc), det_sort (asc), owned_sort (asc), latency (asc)
+            IFS=$'\n' sorted_data=($(printf '%s\n' "${scored_server_data[@]}" | sort -t'|' -k1,1rn -k2,2n -k3,3n -k4,4n))
+            unset IFS
+            # Check detection for newly visible servers (uses cache, only checks uncached)
+            local check_count=$((max_display + 50))
+            [[ $check_count -gt ${#sorted_data[@]} ]] && check_count=${#sorted_data[@]}
+            _check_server_detection "$check_count" "${sorted_data[@]}"
+            if [[ "$deprioritize_detection" == "true" ]]; then
+              local updated_scored=()
+              for entry in "${scored_server_data[@]}"; do
+                local score det_sort owned_sort latency id name ip hostname country_code host_provider owned sec_detail
+                IFS='|' read -r score det_sort owned_sort latency id name ip hostname country_code host_provider owned sec_detail <<< "$entry"
+                det_sort=$(_detection_sort_value "$ip")
+                updated_scored+=("${score}|${det_sort}|${owned_sort}|${latency}|${id}|${name}|${ip}|${hostname}|${country_code}|${host_provider}|${owned}|${sec_detail}")
+              done
+              scored_server_data=("${updated_scored[@]}")
+              IFS=$'\n' sorted_data=($(printf '%s\n' "${scored_server_data[@]}" | sort -t'|' -k1,1rn -k2,2n -k3,3n -k4,4n))
+              unset IFS
+            fi
+            print_info "Sorted by quality."
+          fi
+          continue
+          ;;
+        d|D)
+          if [[ "$current_sort_mode" != "detect" ]]; then
+            current_sort_mode="detect"
+            # Re-sort by detectability - clean first, then security score
+            local updated_scored=()
+            for entry in "${scored_server_data[@]}"; do
+              local score det_sort owned_sort latency id name ip hostname country_code host_provider owned sec_detail
+              IFS='|' read -r score det_sort owned_sort latency id name ip hostname country_code host_provider owned sec_detail <<< "$entry"
+              det_sort=$(_detection_sort_value "$ip")
+              updated_scored+=("${score}|${det_sort}|${owned_sort}|${latency}|${id}|${name}|${ip}|${hostname}|${country_code}|${host_provider}|${owned}|${sec_detail}")
+            done
+            scored_server_data=("${updated_scored[@]}")
+            IFS=$'\n' sorted_data=($(printf '%s\n' "${scored_server_data[@]}" | sort -t'|' -k2,2n -k1,1rn -k3,3n -k4,4n))
+            unset IFS
+            # Check detection for newly visible servers
+            local check_count=$((max_display + 50))
+            [[ $check_count -gt ${#sorted_data[@]} ]] && check_count=${#sorted_data[@]}
+            _check_server_detection "$check_count" "${sorted_data[@]}"
+            print_info "Sorted by detectability."
+          fi
+          continue
+          ;;
+        s|S)
+          if [[ "$current_sort_mode" != "speed" ]]; then
+            current_sort_mode="speed"
+            # Re-sort by speed - instant, field 4 is latency in new format
+            IFS=$'\n' sorted_data=($(printf '%s\n' "${scored_server_data[@]}" | sort -t'|' -k4,4n))
+            unset IFS
+            # Check detection for newly visible servers (uses cache, only checks uncached)
+            local check_count=$((max_display + 50))
+            [[ $check_count -gt ${#sorted_data[@]} ]] && check_count=${#sorted_data[@]}
+            _check_server_detection "$check_count" "${sorted_data[@]}"
+            print_info "Sorted by speed (latency)."
+          fi
+          continue
+          ;;
+        *)
+          # Number selection
+          if [[ "$choice" =~ ^[0-9]+$ ]] && [[ "$choice" -ge 1 ]] && [[ "$choice" -le "${#display_data[@]}" ]]; then
+            local idx=$((choice - 1))
+            CONFIG[selected_region]="${region_ids[$idx]}"
+            CONFIG[selected_ip]="${region_ips[$idx]}"
+            CONFIG[selected_hostname]="${region_hostnames[$idx]}"
+            print_ok "Selected: ${region_names[$idx]}"
+
+            # Check for jurisdiction mismatch warning
+            # Entry format: score|det_sort|owned_sort|latency|id|name|ip|hostname|country_code|host_provider|owned|sec_detail
+            local selected_entry="${display_data[$idx]}"
+            local _score _det_sort _owned_sort _lat _id _name _ip _host _country_code _host_provider _owned _sec_detail
+            IFS='|' read -r _score _det_sort _owned_sort _lat _id _name _ip _host _country_code _host_provider _owned _sec_detail <<< "$selected_entry"
+
+            if [[ "$_owned" == "false" && -n "$_host_provider" && "$_host_provider" != "unknown" ]]; then
+              local mismatch
+              mismatch=$(check_jurisdiction_mismatch "$_country_code" "$_host_provider" "$_owned")
+
+              if [[ "$mismatch" == "5-EYES-HOSTED" ]]; then
+                # Get display name from the entry
+                local display_location="$_name"
+                echo
+                print_warn "JURISDICTION WARNING: This server claims '$display_location'"
+                print_warn "but is hosted by $_host_provider (US-based, 5-Eyes jurisdiction)."
+                print_warn "Traffic may route through US infrastructure despite the claimed location."
+                echo
+                if ! ask_yn "Continue with this selection?" "n"; then
+                  print_info "Server selection cancelled. Returning to list."
+                  continue
+                fi
+              fi
+            fi
+            break
+          else
+            print_error "Invalid selection. Enter a number 1-${#display_data[@]}, or m/q/s."
+          fi
+          ;;
+      esac
+    done
 
   echo
 }
@@ -936,8 +1485,6 @@ phase_summary() {
 
   if [[ "${CONFIG[dip_enabled]}" == "true" ]]; then
     echo "  Server:         DIP (${CONFIG[selected_ip]})"
-  elif [[ "${CONFIG[server_auto]}" == "true" ]]; then
-    echo "  Server:         Auto (lowest latency)"
   else
     echo "  Server:         ${CONFIG[selected_region]} (${CONFIG[selected_ip]})"
   fi
@@ -1057,6 +1604,16 @@ main() {
 
   # Load existing config
   load_config
+
+  # Check for deprecated external credential source and clear it
+  if [[ "${CONFIG[credential_source]:-}" == "command" ]]; then
+    credential_check_deprecated_source "${CONFIG[credential_source]}"
+    echo
+    print_info "Your credential source will be reconfigured during setup."
+    CONFIG[credential_source]=""
+    CONFIG[credential_command]=""
+    echo
+  fi
 
   # Run phases
   phase_provider
