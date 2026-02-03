@@ -1,9 +1,10 @@
 # Velum Secure Server Cache Specification
 
-**Status:** Draft - Concept Proposal  
-**Version:** 0.1.0  
-**Created:** 2026-01-30  
-**Last Updated:** 2026-01-30  
+**Version:** 0.1.0
+**Status:** Concept
+**Last Updated:** 2026-01-30
+**Depends On:** None
+**Required By:** None  
 
 ## Overview
 

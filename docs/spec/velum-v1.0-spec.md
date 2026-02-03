@@ -1,8 +1,10 @@
 # Velum VPN v1.0 Specification
 
 **Version:** 1.0.0
-**Date:** 2026-01-05
-**Status:** Current Implementation
+**Status:** Reference
+**Last Updated:** 2026-01-05
+**Depends On:** None
+**Required By:** None
 
 ---
 

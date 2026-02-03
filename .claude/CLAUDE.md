@@ -79,7 +79,36 @@ Design for the paranoid user. Convenience features must be opt-in, not default.
 - Test on both platforms when possible, or clearly document platform-specific changes
 
 ## Documentation
-- Before committing documentable changes (new features, providers, commands, config options), update README.md
-- Ensure README.md accurately reflects the current state of velum-vpn
-- Keep the Supported Providers table, Commands section, and Architecture diagram current
-- Update Configuration examples when config options change
+
+**README.md is the source of truth for users.** It MUST stay current with the codebase at all times.
+
+### Mandatory README Updates
+
+Update README.md **before committing** whenever ANY of the following change:
+
+- **Features**: Added, modified, or removed functionality
+- **Commands**: New commands, changed syntax, removed commands, new subcommands
+- **Configuration**: New config keys, changed defaults, removed options
+- **Providers**: Added, modified, or removed provider support
+- **Dependencies**: New requirements, changed versions, removed dependencies
+- **Security behavior**: Changes to kill switch, DNS, credential handling, etc.
+- **Architecture**: New files, renamed modules, changed directory structure
+- **Environment variables**: New, changed, or removed variables
+
+### README Sections to Keep Current
+
+| Section | Update When |
+|---------|-------------|
+| Features list | Any feature added/removed/changed |
+| Supported Providers table | Provider support changes |
+| Requirements | Dependencies change |
+| Commands | Any command or subcommand changes |
+| Configuration | Config keys or defaults change |
+| Architecture diagram | File structure changes |
+| Troubleshooting | New common issues discovered |
+
+### No Documentation Debt
+
+Documentation debt is unacceptable. If a feature exists in code but not in README, users cannot discover it. If README describes something that no longer exists, users are misled.
+
+**Rule:** Every PR/commit that changes user-facing behavior MUST include corresponding README updates.

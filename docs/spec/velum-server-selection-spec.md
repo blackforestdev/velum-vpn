@@ -1,9 +1,10 @@
 # Velum Server Selection Specification
 
-**Status:** Complete
 **Version:** 1.0.0
-**Created:** 2026-01-29
+**Status:** Complete
 **Last Updated:** 2026-01-30
+**Depends On:** None
+**Required By:** None
 
 ## Overview
 

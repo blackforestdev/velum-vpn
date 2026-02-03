@@ -1,8 +1,10 @@
 # Velum Tokenizer Subsystem Specification
 
-**Version:** 0.2.2-draft
-**Date:** 2026-01-27
-**Status:** Design Phase - Living Document
+**Version:** 0.2.2
+**Status:** Design
+**Last Updated:** 2026-01-27
+**Depends On:** None
+**Required By:** None
 **Last Audit:** 2026-01-27 (naming conventions, operational terminology)
 
 ---

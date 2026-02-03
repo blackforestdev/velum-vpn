@@ -1,8 +1,10 @@
 # Velum VPN Multi-Hop Specification
 
-**Version:** 0.2.0-draft
-**Date:** 2026-01-27
-**Status:** Design Phase - Living Document
+**Version:** 0.2.0
+**Status:** Design
+**Last Updated:** 2026-01-27
+**Depends On:** velum-profiles-spec.md
+**Required By:** None
 **Last Audit:** 2026-01-27 (routing, security, state paths)
 
 ---
