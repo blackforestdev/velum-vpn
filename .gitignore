@@ -45,5 +45,3 @@ token
 /dist/
 /build/
 
-# Development handoff (not in repo)
-HANDOFF.md
