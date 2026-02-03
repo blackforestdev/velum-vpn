@@ -266,6 +266,16 @@ _vault_encrypt_data() {
 
   # Write plaintext to temp file (in tmpfs if available)
   local tmpdir="${VELUM_RUNTIME_DIR:-/tmp}"
+
+  # Ensure runtime directory exists (may not exist after reboot)
+  if [[ "$tmpdir" != "/tmp" ]] && [[ ! -d "$tmpdir" ]]; then
+    if type -t ensure_runtime_dir &>/dev/null; then
+      ensure_runtime_dir || tmpdir="/tmp"
+    else
+      mkdir -p "$tmpdir" 2>/dev/null && chmod 700 "$tmpdir" || tmpdir="/tmp"
+    fi
+  fi
+
   local tmpfile
   tmpfile=$(mktemp "${tmpdir}/velum_enc_XXXXXX") || return 1
 
@@ -333,6 +343,16 @@ _vault_decrypt_data() {
 
   # Write ciphertext to temp file
   local tmpdir="${VELUM_RUNTIME_DIR:-/tmp}"
+
+  # Ensure runtime directory exists (may not exist after reboot)
+  if [[ "$tmpdir" != "/tmp" ]] && [[ ! -d "$tmpdir" ]]; then
+    if type -t ensure_runtime_dir &>/dev/null; then
+      ensure_runtime_dir || tmpdir="/tmp"
+    else
+      mkdir -p "$tmpdir" 2>/dev/null && chmod 700 "$tmpdir" || tmpdir="/tmp"
+    fi
+  fi
+
   local tmpfile
   tmpfile=$(mktemp "${tmpdir}/velum_dec_XXXXXX") || {
     unset VAULT_ENC_KEY VAULT_HMAC_KEY
