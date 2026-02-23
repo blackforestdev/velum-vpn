@@ -6,7 +6,7 @@ velum-vpn provides a unified command-line interface for connecting to multiple V
 
 ## Features
 
-- **Provider Agnostic**: Support for multiple VPN providers (PIA, Mullvad, IVPN) with a pluggable architecture
+- **Provider Agnostic**: Support for multiple VPN providers (Mullvad, IVPN) with a pluggable architecture
 - **WireGuard Only**: Modern, fast, and secure - no legacy OpenVPN support
 - **Kill Switch**: Firewall-based protection that blocks all traffic if VPN drops
 - **IPv6 Protection**: Blocks IPv6 at both interface and firewall level to prevent leaks
@@ -25,7 +25,6 @@ velum-vpn provides a unified command-line interface for connecting to multiple V
 
 | Provider | Authentication | Port Forwarding | Dedicated IP |
 |----------|---------------|-----------------|--------------|
-| **PIA** (Private Internet Access) | Username + Password | Yes | Yes |
 | **Mullvad** | 16-digit Account Number | No (removed 2023) | No |
 | **IVPN** | Account ID (i-XXXX-XXXX-XXXX) | No (removed) | No |
 
@@ -103,6 +102,7 @@ Commands:
   webrtc      Open browser for WebRTC leak test
   monitor     Background VPN health monitoring
   credential  Manage encrypted credential vault
+  device      Manage WireGuard keys on provider account
 
 Options:
   -h, --help     Show help
@@ -113,7 +113,7 @@ Options:
 
 Interactive configuration wizard with 5 phases:
 
-1. **Provider Selection**: Choose VPN provider (PIA, Mullvad, IVPN)
+1. **Provider Selection**: Choose VPN provider (Mullvad, IVPN)
 2. **Authentication**: Enter credentials and authenticate (prompt or encrypted vault)
 3. **Security Profile**: Configure kill switch, IPv6, DNS settings
 4. **Connection Features**: Port forwarding, Dedicated IP (provider-dependent)
@@ -321,7 +321,37 @@ velum credential migrate
 **Provider-specific validation:**
 - Mullvad: 16-digit account number
 - IVPN: Account ID format (i-XXXX-XXXX-XXXX or ivpn-XXXX-XXXX-XXXX)
-- PIA: Username format (pXXXXXXX)
+
+### `velum device`
+
+Manage WireGuard keys (devices) registered on your provider account. Does **not** require sudo — uses your existing authentication token over TLS 1.2+.
+
+```bash
+# List registered WireGuard keys
+velum device list
+
+# Revoke a key (interactive — shows list, prompts for selection)
+velum device revoke
+
+# Revoke by list index
+velum device revoke --index 3
+
+# Revoke by public key
+velum device revoke --pubkey "abc123..."
+
+# Revoke the oldest registered key
+velum device revoke --oldest
+```
+
+**Why this exists:** Providers like Mullvad limit active WireGuard keys (5 max). When the limit is hit, `velum connect` cannot register a new key. Without this command, the only option is to visit the provider's website over an **unprotected connection** — exposing your account to network surveillance.
+
+**Security:**
+- Public keys displayed truncated (first 8 + last 4 chars) for screen capture safety
+- Revocation requires explicit confirmation (default: NO)
+- Uses Bearer token from tmpfs — no account number transmitted
+- All API calls use TLS 1.2+ encryption (safe without VPN)
+
+**Inline recovery:** When `velum connect` hits a key limit, it automatically offers to list and revoke a key inline, then retries the connection — no separate command needed.
 
 ## Configuration
 
@@ -333,7 +363,7 @@ Location: `~/.config/velum/velum.conf`
 # velum-vpn configuration
 
 # Provider
-CONFIG[provider]="pia"
+CONFIG[provider]="mullvad"
 
 # Security
 CONFIG[killswitch]="true"
@@ -411,7 +441,6 @@ This prevents IPv6 leaks that could expose your real IP address.
 ### DNS Leak Protection
 
 When enabled, DNS queries are routed through the VPN provider's DNS servers:
-- PIA: `10.0.0.243` (primary)
 - Mullvad: `10.64.0.1` (primary)
 - IVPN: `10.0.254.1` (primary)
 - Quad9: `9.9.9.9` (fallback, all providers)
@@ -468,6 +497,7 @@ velum-vpn/
 │   ├── velum-config              # Configuration wizard
 │   ├── velum-connect             # VPN connection
 │   ├── velum-credential          # Encrypted vault management
+│   ├── velum-device              # WireGuard key management
 │   ├── velum-disconnect          # VPN disconnection
 │   ├── velum-killswitch          # Kill switch management
 │   ├── velum-monitor             # Background health monitor
@@ -488,14 +518,8 @@ velum-vpn/
 │   │   └── linux.sh              # Linux implementation
 │   └── providers/                # VPN provider plugins
 │       ├── provider-base.sh      # Provider interface
-│       ├── pia.sh                # PIA implementation
 │       ├── mullvad.sh            # Mullvad implementation
 │       └── ivpn.sh               # IVPN implementation
-│
-├── etc/                          # Static configuration
-│   └── providers/
-│       └── pia/
-│           └── ca.rsa.4096.crt   # PIA CA certificate
 │
 └── docs/                         # Documentation
     └── spec/                     # Architecture specifications
@@ -529,6 +553,11 @@ provider_enable_pf()         # Enable port forwarding
 provider_refresh_pf()        # Refresh port forwarding
 provider_supports_dip()      # Dedicated IP support
 provider_get_dip()           # Get DIP info
+
+# Device management (optional)
+provider_supports_device_mgmt()  # Device management support
+provider_list_devices()          # List registered WG keys
+provider_revoke_device()         # Revoke a WG key
 
 # Provider-specific
 provider_get_dns()           # Get DNS servers
@@ -570,7 +599,7 @@ os_killswitch_rule_count()   # Count firewall rules
 2. Implement the provider interface functions
 3. The provider will be auto-discovered by `list_providers`
 
-See `lib/providers/pia.sh`, `lib/providers/mullvad.sh`, or `lib/providers/ivpn.sh` for examples.
+See `lib/providers/mullvad.sh` or `lib/providers/ivpn.sh` for examples.
 
 ## Troubleshooting
 
@@ -609,6 +638,26 @@ sudo nft list table inet velum_killswitch
 # Manually disable if stuck
 sudo velum killswitch disable
 ```
+
+### WireGuard Key Limit Reached
+
+If `velum connect` fails with a key limit error, you have too many WireGuard keys registered (Mullvad allows 5):
+
+```bash
+# List registered keys
+velum device list
+
+# Revoke a key (interactive)
+velum device revoke
+
+# Or revoke the oldest key
+velum device revoke --oldest
+
+# Then reconnect
+sudo velum connect
+```
+
+**Note:** `velum connect` will automatically offer inline recovery when it detects a key limit error — you can revoke a key and retry without running separate commands.
 
 ### Token Expired or Missing
 

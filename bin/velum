@@ -34,6 +34,7 @@ COMMANDS
     config lint     Validate configuration file for errors
     connect         Connect to VPN (requires sudo)
     credential      Manage encrypted credential vault
+    device          Manage WireGuard keys on provider account
     disconnect      Disconnect from VPN (requires sudo)
     status          Show connection status (sudo for full details)
     test            Comprehensive leak and connection testing (requires sudo)
@@ -59,7 +60,6 @@ SECURITY FEATURES
     - Encrypted fallback: Quad9 (9.9.9.9) as secondary DNS
 
 SUPPORTED PROVIDERS
-    - PIA (Private Internet Access) - Port forwarding, Dedicated IP
     - Mullvad - Privacy-focused, no account info required
     - IVPN - Privacy-focused, open source, audited
 
@@ -102,6 +102,9 @@ main() {
       ;;
     credential)
       exec "$SCRIPT_DIR/velum-credential" "$@"
+      ;;
+    device)
+      exec "$SCRIPT_DIR/velum-device" "$@"
       ;;
     disconnect)
       exec "$SCRIPT_DIR/velum-disconnect" "$@"

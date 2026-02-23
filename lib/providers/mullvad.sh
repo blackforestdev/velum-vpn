@@ -304,7 +304,7 @@ provider_wg_exchange() {
     # Clean up account number from memory
     unset account_number
 
-    # Build response in PIA-compatible format
+    # Build response in standard provider format
     echo "{\"status\": \"OK\", \"peer_ip\": \"$peer_ip\", \"server_key\": \"$server_key\", \"server_port\": $MULLVAD_WG_PORT, \"dns_servers\": [\"10.64.0.1\"]}"
   else
     # Clean up account number from memory
@@ -314,6 +314,15 @@ provider_wg_exchange() {
     local error_msg
     error_msg=$(echo "$response" | jq -r '.error // .message // empty' 2>/dev/null || echo "$response")
     log_error "WireGuard key registration failed: $error_msg"
+
+    # Detect key limit error - return exit code 2 so callers can offer recovery
+    if [[ "$error_msg" == *"KEY_LIMIT"* ]] || [[ "$error_msg" == *"key limit"* ]] || \
+       [[ "$error_msg" == *"Too many"* ]] || [[ "$error_msg" == *"too many"* ]] || \
+       [[ "$error_msg" == *"max number"* ]]; then
+      log_info "Hint: Use 'velum device' to manage registered WireGuard keys"
+      return 2
+    fi
+
     return 1
   fi
 }
@@ -441,16 +450,36 @@ mullvad_list_devices() {
     return 1
   fi
 
-  curl -s --tlsv1.2 \
+  local response
+  response=$(curl -s --tlsv1.2 \
     -H "Content-Type: application/json" \
     -H "Accept: application/json" \
     -H "Authorization: Bearer $token" \
-    "${MULLVAD_ACCOUNTS_API}/devices"
+    "${MULLVAD_ACCOUNTS_API}/devices")
+
+  unset token
+
+  # Validate response is a JSON array (not an error object)
+  if ! printf '%s' "$response" | jq -e 'type == "array"' >/dev/null 2>&1; then
+    local error_msg
+    error_msg=$(printf '%s' "$response" | jq -r '.message // .error // empty' 2>/dev/null)
+    log_error "Failed to list devices: ${error_msg:-invalid response}"
+    return 1
+  fi
+
+  echo "$response"
 }
 
 # Revoke a WireGuard key
 mullvad_revoke_key() {
   local pubkey="$1"
+
+  # Validate pubkey format before sending to API
+  if ! validate_wg_key "$pubkey"; then
+    log_error "Invalid WireGuard public key format"
+    return 1
+  fi
+
   local token
   token=$(_get_mullvad_token)
 
@@ -459,9 +488,39 @@ mullvad_revoke_key() {
     return 1
   fi
 
-  curl -s --tlsv1.2 -X POST \
+  local response http_code
+  http_code=$(curl -s --tlsv1.2 -X POST \
+    -o /dev/null -w '%{http_code}' \
     -H "Content-Type: application/json" \
     -H "Authorization: Bearer $token" \
     -d "{\"pubkey\": \"$pubkey\"}" \
-    "https://api.mullvad.net/www/wg-pubkeys/revoke/"
+    "https://api.mullvad.net/www/wg-pubkeys/revoke/")
+
+  unset token
+
+  # 204 No Content = success for revocation
+  # 200 OK = also success
+  if [[ "$http_code" =~ ^2[0-9][0-9]$ ]]; then
+    return 0
+  else
+    log_error "Key revocation failed (HTTP $http_code)"
+    return 1
+  fi
+}
+
+# ============================================================================
+# DEVICE MANAGEMENT INTERFACE
+# ============================================================================
+
+provider_supports_device_mgmt() {
+  return 0
+}
+
+provider_list_devices() {
+  mullvad_list_devices
+}
+
+provider_revoke_device() {
+  local pubkey="$1"
+  mullvad_revoke_key "$pubkey"
 }

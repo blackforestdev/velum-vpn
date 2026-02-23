@@ -1,0 +1,356 @@
+#!/usr/bin/env bash
+# velum-device - Manage WireGuard keys (devices) on provider account
+# Does NOT require sudo - uses Bearer token for API calls (TLS 1.2+)
+
+set -euo pipefail
+
+# ============================================================================
+# INITIALIZATION
+# ============================================================================
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+VELUM_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+export VELUM_ROOT
+
+# Source libraries
+source "$VELUM_ROOT/lib/velum-core.sh"
+source "$VELUM_ROOT/lib/velum-security.sh"
+source "$VELUM_ROOT/lib/velum-credential.sh"
+source "$VELUM_ROOT/lib/os/detect.sh"
+source "$VELUM_ROOT/lib/providers/provider-base.sh"
+
+# ============================================================================
+# USAGE
+# ============================================================================
+
+usage() {
+  cat << 'EOF'
+velum-device - Manage WireGuard keys on provider account
+
+USAGE
+    velum device <command> [options]
+
+COMMANDS
+    list              List registered WireGuard keys
+    revoke            Revoke a WireGuard key (interactive)
+
+REVOKE OPTIONS
+    --index N         Revoke key at list index N
+    --pubkey KEY      Revoke key matching this public key
+    --oldest          Revoke the key with the earliest creation date
+
+OPTIONS
+    -h, --help        Show this help message
+
+DESCRIPTION
+    Manages WireGuard keys registered on your provider account. Most providers
+    limit the number of active keys (e.g., Mullvad allows 5). When the limit
+    is reached, you must revoke an existing key before registering a new one.
+
+    All API calls use TLS 1.2+ encryption - safe to use without an active VPN
+    connection.
+
+SECURITY
+    - Public keys are displayed truncated (first 8 + last 4 chars) for screen
+      capture safety
+    - Revocation requires explicit confirmation (default: NO)
+    - Authentication token from tmpfs (session storage, cleared on reboot)
+    - No account number displayed or transmitted
+
+EXAMPLES
+    velum device list             # List all registered keys
+    velum device revoke           # Interactive: select from list
+    velum device revoke --index 3 # Revoke key #3 from list
+    velum device revoke --oldest  # Revoke the oldest registered key
+
+EOF
+}
+
+# ============================================================================
+# HELPERS
+# ============================================================================
+
+# Truncate pubkey for display safety (screen capture protection)
+# Shows first 8 + last 4 chars: "abcdefgh...wxyz"
+truncate_pubkey() {
+  local key="$1"
+  if [[ ${#key} -gt 12 ]]; then
+    echo "${key:0:8}...${key: -4}"
+  else
+    echo "$key"
+  fi
+}
+
+# Parse device list JSON into formatted table
+# Outputs: INDEX  CREATED  IPv4  PUBKEY(truncated)
+format_device_list() {
+  local devices_json="$1"
+  local count
+  count=$(printf '%s' "$devices_json" | jq 'length')
+
+  if [[ "$count" -eq 0 ]]; then
+    print_info "No WireGuard keys registered on this account."
+    return 0
+  fi
+
+  printf "  %-5s  %-12s  %-18s  %s\n" "#" "CREATED" "IPv4" "PUBLIC KEY"
+  printf "  %-5s  %-12s  %-18s  %s\n" "---" "----------" "----------------" "----------------"
+
+  local i
+  for ((i = 0; i < count; i++)); do
+    local pubkey created ipv4
+    pubkey=$(printf '%s' "$devices_json" | jq -r ".[$i].pubkey // empty")
+    created=$(printf '%s' "$devices_json" | jq -r ".[$i].created // empty")
+    ipv4=$(printf '%s' "$devices_json" | jq -r ".[$i].ipv4_address // empty")
+
+    # Format created date (truncate time portion)
+    local created_short="${created%%T*}"
+    [[ -z "$created_short" ]] && created_short="unknown"
+
+    # Truncate pubkey for screen safety
+    local pubkey_display
+    pubkey_display=$(truncate_pubkey "$pubkey")
+
+    printf "  %-5s  %-12s  %-18s  %s\n" "$((i + 1))" "$created_short" "${ipv4:-n/a}" "$pubkey_display"
+  done
+
+  echo
+  echo "  $count of 5 key slots used"
+}
+
+# ============================================================================
+# COMMANDS
+# ============================================================================
+
+cmd_list() {
+  echo
+  echo "${C_BOLD}Registered WireGuard Keys${C_RESET}"
+  echo "========================="
+  echo
+
+  local devices_json
+  devices_json=$(provider_list_devices) || {
+    print_error "Failed to retrieve device list"
+    exit 1
+  }
+
+  format_device_list "$devices_json"
+  echo
+}
+
+cmd_revoke() {
+  local target_index=""
+  local target_pubkey=""
+  local target_oldest=false
+
+  # Parse revoke options
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --index)
+        target_index="$2"
+        shift 2
+        ;;
+      --pubkey)
+        target_pubkey="$2"
+        shift 2
+        ;;
+      --oldest)
+        target_oldest=true
+        shift
+        ;;
+      *)
+        print_error "Unknown option: $1"
+        exit 1
+        ;;
+    esac
+  done
+
+  echo
+  echo "${C_BOLD}Revoke WireGuard Key${C_RESET}"
+  echo "===================="
+  echo
+
+  # Fetch device list
+  local devices_json
+  devices_json=$(provider_list_devices) || {
+    print_error "Failed to retrieve device list"
+    exit 1
+  }
+
+  local count
+  count=$(printf '%s' "$devices_json" | jq 'length')
+
+  if [[ "$count" -eq 0 ]]; then
+    print_info "No WireGuard keys registered - nothing to revoke."
+    return 0
+  fi
+
+  # Show current keys
+  format_device_list "$devices_json"
+  echo
+
+  local revoke_pubkey=""
+
+  if [[ -n "$target_pubkey" ]]; then
+    # Revoke by pubkey - validate format
+    if ! validate_wg_key "$target_pubkey"; then
+      print_error "Invalid WireGuard public key format"
+      exit 1
+    fi
+
+    # Verify key exists in list
+    local found
+    found=$(printf '%s' "$devices_json" | jq -r --arg k "$target_pubkey" \
+      '[.[] | select(.pubkey == $k)] | length')
+    if [[ "$found" -eq 0 ]]; then
+      print_error "Key not found in device list"
+      exit 1
+    fi
+
+    revoke_pubkey="$target_pubkey"
+
+  elif [[ "$target_oldest" == true ]]; then
+    # Revoke oldest key (earliest created timestamp)
+    revoke_pubkey=$(printf '%s' "$devices_json" | jq -r \
+      'sort_by(.created) | .[0].pubkey // empty')
+    if [[ -z "$revoke_pubkey" ]]; then
+      print_error "Could not determine oldest key"
+      exit 1
+    fi
+    local oldest_created
+    oldest_created=$(printf '%s' "$devices_json" | jq -r \
+      'sort_by(.created) | .[0].created // empty')
+    print_info "Oldest key: $(truncate_pubkey "$revoke_pubkey") (created ${oldest_created%%T*})"
+
+  elif [[ -n "$target_index" ]]; then
+    # Revoke by index
+    if ! [[ "$target_index" =~ ^[0-9]+$ ]] || [[ "$target_index" -lt 1 ]] || [[ "$target_index" -gt "$count" ]]; then
+      print_error "Invalid index: $target_index (must be 1-$count)"
+      exit 1
+    fi
+
+    local idx=$((target_index - 1))
+    revoke_pubkey=$(printf '%s' "$devices_json" | jq -r ".[$idx].pubkey // empty")
+    if [[ -z "$revoke_pubkey" ]]; then
+      print_error "Could not get key at index $target_index"
+      exit 1
+    fi
+
+  else
+    # Interactive mode - prompt for selection
+    echo "Enter the number of the key to revoke (1-$count):"
+    local selection
+    read -r -p "  > " selection
+
+    if ! [[ "$selection" =~ ^[0-9]+$ ]] || [[ "$selection" -lt 1 ]] || [[ "$selection" -gt "$count" ]]; then
+      print_error "Invalid selection: $selection"
+      exit 1
+    fi
+
+    local idx=$((selection - 1))
+    revoke_pubkey=$(printf '%s' "$devices_json" | jq -r ".[$idx].pubkey // empty")
+    if [[ -z "$revoke_pubkey" ]]; then
+      print_error "Could not get key at index $selection"
+      exit 1
+    fi
+  fi
+
+  # Validate the key we're about to revoke
+  if ! validate_wg_key "$revoke_pubkey"; then
+    print_error "Key data is malformed - refusing to send to API"
+    exit 1
+  fi
+
+  # Confirmation (default NO for safety)
+  echo
+  print_warn "You are about to revoke key: $(truncate_pubkey "$revoke_pubkey")"
+  print_warn "Any device using this key will lose VPN access immediately."
+  echo
+  if ! ask_yn "Revoke this key?" "n"; then
+    echo "Cancelled."
+    return 0
+  fi
+
+  # Revoke
+  echo
+  if provider_revoke_device "$revoke_pubkey"; then
+    print_ok "Key revoked successfully"
+    echo
+    print_info "A new key slot is now available. Run 'sudo velum connect' to reconnect."
+  else
+    print_error "Failed to revoke key"
+    exit 1
+  fi
+
+  unset revoke_pubkey
+}
+
+# ============================================================================
+# MAIN
+# ============================================================================
+
+main() {
+  if [[ $# -lt 1 ]]; then
+    usage
+    exit 0
+  fi
+
+  local cmd="$1"
+  shift
+
+  case "$cmd" in
+    -h|--help|help)
+      usage
+      exit 0
+      ;;
+  esac
+
+  # Load configuration
+  if [[ ! -f "$VELUM_CONFIG_FILE" ]]; then
+    print_error "No configuration found. Run 'velum config' first."
+    exit 1
+  fi
+
+  if ! safe_load_config "$VELUM_CONFIG_FILE" --strict --known-keys-only; then
+    print_error "Failed to parse configuration file."
+    exit 1
+  fi
+
+  if [[ -z "${CONFIG[provider]:-}" ]]; then
+    print_error "No provider configured. Run 'velum config' first."
+    exit 1
+  fi
+
+  # Load provider
+  load_provider "${CONFIG[provider]}" || exit 1
+
+  # Check provider supports device management
+  if ! provider_supports_device_mgmt; then
+    print_error "Provider '${CONFIG[provider]}' does not support device management"
+    exit 1
+  fi
+
+  # Check for authentication token
+  if ! credential_check_token "${CONFIG[provider]}"; then
+    print_error "No authentication token found."
+    print_error "Run 'velum config' to authenticate first."
+    exit 1
+  fi
+
+  # Dispatch command
+  case "$cmd" in
+    list)
+      cmd_list "$@"
+      ;;
+    revoke)
+      cmd_revoke "$@"
+      ;;
+    *)
+      print_error "Unknown command: $cmd"
+      echo "Run 'velum device --help' for usage."
+      exit 1
+      ;;
+  esac
+}
+
+main "$@"

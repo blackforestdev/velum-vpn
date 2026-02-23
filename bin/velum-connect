@@ -118,11 +118,8 @@ find_best_server() {
         hostname="$id"
         ;;
       *)
-        # PIA format: id, name, servers.wg[0].ip, servers.wg[0].cn
-        id=$(echo "$server" | jq -r '.id')
-        name=$(echo "$server" | jq -r '.name')
-        ip=$(echo "$server" | jq -r '.servers.wg[0].ip // empty')
-        hostname=$(echo "$server" | jq -r '.servers.wg[0].cn // empty')
+        # Unknown provider format - skip
+        continue
         ;;
     esac
 
@@ -233,7 +230,7 @@ Address = $peer_ip
 PrivateKey = $WG_PRIVATE_KEY"
 
   # Add DNS with encrypted fallback
-  # Primary: VPN provider DNS (e.g., PIA 10.0.0.243)
+  # Primary: VPN provider DNS (e.g., Mullvad 10.64.0.1)
   # Secondary: Quad9 (9.9.9.9) - routed through tunnel for encryption
   #
   # On Linux, we skip DNS in WireGuard config because wg-quick tries to use
@@ -267,7 +264,7 @@ PostDown = $VELUM_ROOT/bin/velum-killswitch notify"
   fi
 
   # Add DNS route fix - ensure DNS goes through tunnel
-  # PIA uses 10.0.0.243 which may conflict with common LAN subnets
+  # Provider DNS (e.g., 10.64.0.1) may conflict with common LAN subnets
   # Note: dns_server is validated as IPv4 (validate_ipv4) before reaching here,
   # so it cannot contain spaces/special chars - quoting not required
   if [[ -n "$dns_server" ]]; then
@@ -590,16 +587,143 @@ main() {
   fi
 
   # Exchange keys with provider
-  local wg_response
+  local wg_response exchange_rc=0
   wg_response=$(provider_wg_exchange \
     "${CONFIG[selected_ip]}" \
     "${CONFIG[selected_hostname]}" \
     "$WG_PUBLIC_KEY" \
     "${CONFIG[dip_token]:-}" \
-    "$account_credential") || {
+    "$account_credential") || exchange_rc=$?
+
+  if [[ "$exchange_rc" -eq 2 ]] && provider_supports_device_mgmt; then
+    # Key limit reached - offer inline recovery
+    echo
+    print_warn "WireGuard key limit reached on your account."
+    print_info "You can revoke an existing key to free a slot."
+    print_info "All API calls use TLS 1.2+ encryption (safe without VPN)."
+    echo
+
+    if ask_yn "List registered keys and revoke one now?" "y"; then
+      echo
+      local devices_json
+      devices_json=$(provider_list_devices) || {
+        print_error "Failed to retrieve device list"
+        print_info "You can manage keys manually: velum device list"
+        unset account_credential
+        exit 1
+      }
+
+      local dev_count
+      dev_count=$(printf '%s' "$devices_json" | jq 'length')
+
+      if [[ "$dev_count" -eq 0 ]]; then
+        print_error "No keys found (unexpected). Try 'velum device list' manually."
+        unset account_credential
+        exit 1
+      fi
+
+      # Display device list
+      printf "  %-5s  %-12s  %-18s  %s\n" "#" "CREATED" "IPv4" "PUBLIC KEY"
+      printf "  %-5s  %-12s  %-18s  %s\n" "---" "----------" "----------------" "----------------"
+
+      local i
+      for ((i = 0; i < dev_count; i++)); do
+        local d_pubkey d_created d_ipv4
+        d_pubkey=$(printf '%s' "$devices_json" | jq -r ".[$i].pubkey // empty")
+        d_created=$(printf '%s' "$devices_json" | jq -r ".[$i].created // empty")
+        d_ipv4=$(printf '%s' "$devices_json" | jq -r ".[$i].ipv4_address // empty")
+        local d_created_short="${d_created%%T*}"
+        [[ -z "$d_created_short" ]] && d_created_short="unknown"
+        local d_pubkey_short
+        if [[ ${#d_pubkey} -gt 12 ]]; then
+          d_pubkey_short="${d_pubkey:0:8}...${d_pubkey: -4}"
+        else
+          d_pubkey_short="$d_pubkey"
+        fi
+        printf "  %-5s  %-12s  %-18s  %s\n" "$((i + 1))" "$d_created_short" "${d_ipv4:-n/a}" "$d_pubkey_short"
+      done
+
+      echo
+      echo "  $dev_count of 5 key slots used"
+      echo
+
+      # Prompt for selection
+      echo "Enter the number of the key to revoke (1-$dev_count):"
+      local selection
+      read -r -p "  > " selection
+
+      if ! [[ "$selection" =~ ^[0-9]+$ ]] || [[ "$selection" -lt 1 ]] || [[ "$selection" -gt "$dev_count" ]]; then
+        print_error "Invalid selection"
+        print_info "You can manage keys manually: velum device revoke"
+        unset account_credential
+        exit 1
+      fi
+
+      local sel_idx=$((selection - 1))
+      local sel_pubkey
+      sel_pubkey=$(printf '%s' "$devices_json" | jq -r ".[$sel_idx].pubkey // empty")
+
+      if ! validate_wg_key "$sel_pubkey"; then
+        print_error "Key data is malformed"
+        unset account_credential
+        exit 1
+      fi
+
+      local sel_display
+      if [[ ${#sel_pubkey} -gt 12 ]]; then
+        sel_display="${sel_pubkey:0:8}...${sel_pubkey: -4}"
+      else
+        sel_display="$sel_pubkey"
+      fi
+
+      echo
+      print_warn "About to revoke key: $sel_display"
+      print_warn "The device using this key will lose VPN access immediately."
+      echo
+      if ! ask_yn "Confirm revocation?" "n"; then
+        echo "Cancelled."
+        print_info "You can manage keys manually: velum device revoke"
+        unset account_credential
+        exit 1
+      fi
+
+      echo
+      if ! provider_revoke_device "$sel_pubkey"; then
+        print_error "Failed to revoke key"
+        unset account_credential
+        exit 1
+      fi
+
+      print_ok "Key revoked. Retrying connection..."
+      echo
+      unset sel_pubkey devices_json
+
+      # Regenerate WG keys for fresh registration
+      rm -f "$WG_KEY_FILE"
+      generate_wg_keys
+
+      # Retry key exchange
+      exchange_rc=0
+      wg_response=$(provider_wg_exchange \
+        "${CONFIG[selected_ip]}" \
+        "${CONFIG[selected_hostname]}" \
+        "$WG_PUBLIC_KEY" \
+        "${CONFIG[dip_token]:-}" \
+        "$account_credential") || exchange_rc=$?
+    else
+      echo
+      print_info "You can manage keys at any time with: velum device list"
+      print_info "Then revoke a key with: velum device revoke"
+      unset account_credential
+      exit 1
+    fi
+  fi
+
+  if [[ "$exchange_rc" -ne 0 ]]; then
     print_error "WireGuard key exchange failed"
+    unset account_credential
     exit 1
-  }
+  fi
 
   # Clean up credential from memory
   unset account_credential

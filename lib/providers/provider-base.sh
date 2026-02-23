@@ -122,6 +122,24 @@ provider_get_ca_cert() {
   return 1
 }
 
+# Device management (optional)
+provider_supports_device_mgmt() {
+  # Does this provider support WireGuard key/device management?
+  return 1
+}
+
+provider_list_devices() {
+  # List registered WireGuard keys/devices on account
+  echo "ERROR: provider_list_devices() not implemented" >&2
+  return 1
+}
+
+provider_revoke_device() {
+  # Revoke a WireGuard key/device by public key
+  echo "ERROR: provider_revoke_device() not implemented" >&2
+  return 1
+}
+
 # ============================================================================
 # PROVIDER LOADING
 # ============================================================================
