@@ -132,8 +132,6 @@ Velum assumes users may face adversaries with:
 |------------|----------------|---------------|
 | Mullvad account number | CRITICAL | 16 digits = full account access forever |
 | IVPN account ID | CRITICAL | i-XXXX-XXXX-XXXX = full account access forever |
-| PIA username | HIGH | Can be changed; requires password |
-| PIA password | CRITICAL | Combined with username = access |
 | Access token (any) | HIGH | Time-limited; reveals provider choice |
 | WireGuard private key | HIGH | Cryptographic material; can be regenerated |
 | Selected server | MEDIUM | Reveals geographic preferences |
@@ -163,7 +161,6 @@ User Flow (Default):
 /run/user/$UID/velum/           # tmpfs, cleared on reboot
 ├── mullvad_token               # Access token only, no account ID
 ├── ivpn_token
-├── pia_token
 └── wg_private_key              # WireGuard private key (regenerated each session)
 ```
 
@@ -440,7 +437,7 @@ velum credential migrate
 | `lib/velum-credential.sh` | NEW: Credential management library (tmpfs, migration, credential_get_from_source API) | Complete |
 | `lib/velum-vault.sh` | NEW: Encrypted storage (Argon2id + AES-256-CBC/HMAC-SHA256) | Complete |
 | `bin/velum-credential` | NEW: Credential CLI (init, store, clear, migrate) | Complete |
-| `lib/providers/pia.sh` | MODIFY: Tokens to tmpfs (`--runtime` flag) | Complete |
+| `lib/providers/mullvad.sh` | MODIFY: Tokens to tmpfs (`--runtime` flag) | Complete |
 | `bin/velum-config` | MODIFY: Uses credential_get_from_source() for unified credential retrieval | Complete |
 | `bin/velum-connect` | MODIFY: Uses credential_get_from_source(), WG keys to tmpfs | Complete |
 | `lib/velum-security.sh` | MODIFY: Added credential_source + credential_command validation | Complete |

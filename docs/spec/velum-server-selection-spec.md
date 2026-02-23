@@ -621,7 +621,6 @@ sort -t'|' -k2,2n -k1,1rn -k4,4n
 ### Phase 4: Testing & Validation
 - [x] Test with Mullvad (560 servers)
 - [x] Test with IVPN
-- [x] Test with PIA
 - [x] Verify quality sort: ★★★ first, owned before rented, fastest within tier
 - [x] Verify speed sort: fastest overall first
 - [x] Verify detectability sort: clean before partial before flagged

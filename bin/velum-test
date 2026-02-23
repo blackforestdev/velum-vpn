@@ -165,10 +165,10 @@ test_public_ip() {
       local is_vpn_ip=false
       local provider_name="${CONFIG[provider]:-unknown}"
 
-      # PIA datacenter providers
-      if [[ "$org" == *"M247"* ]] || [[ "$org" == *"PIA"* ]] || [[ "$org" == *"Private Internet Access"* ]] || \
-         [[ "$org" == *"Glesys"* ]] || [[ "$org" == *"Privex"* ]] || [[ "$org" == *"Quadranet"* ]] || \
-         [[ "$org" == *"Cogent"* ]] || [[ "$org" == *"Leaseweb"* ]] || [[ "$org" == *"Datacamp"* ]]; then
+      # Common VPN datacenter providers
+      if [[ "$org" == *"M247"* ]] || [[ "$org" == *"Glesys"* ]] || [[ "$org" == *"Privex"* ]] || \
+         [[ "$org" == *"Quadranet"* ]] || [[ "$org" == *"Cogent"* ]] || [[ "$org" == *"Leaseweb"* ]] || \
+         [[ "$org" == *"Datacamp"* ]]; then
         is_vpn_ip=true
       fi
 
@@ -224,7 +224,7 @@ test_dns_leak() {
 
     # Try to detect provider DNS
     if [[ -z "$vpn_dns" ]]; then
-      # Check for 10.x.x.x (PIA)
+      # Check for 10.x.x.x (VPN provider DNS)
       vpn_dns=$(scutil --dns 2>/dev/null | grep "nameserver\[" | awk '{print $3}' | grep "^10\." | head -1)
     fi
   else
@@ -355,14 +355,14 @@ test_routes() {
     local default_route
     default_route=$(ip route show default 2>/dev/null)
 
-    if [[ "$default_route" == *"wg"* ]] || [[ "$default_route" == *"velum"* ]] || [[ "$default_route" == *"pia"* ]]; then
+    if [[ "$default_route" == *"wg"* ]] || [[ "$default_route" == *"velum"* ]]; then
       echo "    Default:    $PASS - Routed through VPN"
       ((TESTS_PASSED++))
     else
       # Check for 0.0.0.0/1 and 128.0.0.0/1 routes
       local route_0 route_128
-      route_0=$(ip route show 0.0.0.0/1 2>/dev/null | grep -E "wg|velum|pia")
-      route_128=$(ip route show 128.0.0.0/1 2>/dev/null | grep -E "wg|velum|pia")
+      route_0=$(ip route show 0.0.0.0/1 2>/dev/null | grep -E "wg|velum")
+      route_128=$(ip route show 128.0.0.0/1 2>/dev/null | grep -E "wg|velum")
 
       if [[ -n "$route_0" && -n "$route_128" ]]; then
         echo "    0.0.0.0/1:  $PASS - Routed through VPN"
@@ -475,15 +475,8 @@ test_killswitch() {
           ((TESTS_WARNED++))
         fi
       else
-        # Check for PIA kill switch (backwards compat)
-        ks_rules=$(sudo pfctl -a pia_killswitch -s rules 2>/dev/null | wc -l | tr -d ' ')
-        if [[ "$ks_rules" -gt 0 ]]; then
-          echo "    Kill switch: $PASS - PIA kill switch active"
-          ((TESTS_PASSED++))
-        else
-          echo "    Kill switch: $WARN - Not active (traffic may leak if VPN drops)"
-          ((TESTS_WARNED++))
-        fi
+        echo "    Kill switch: $WARN - Not active (traffic may leak if VPN drops)"
+        ((TESTS_WARNED++))
       fi
     else
       echo "    pf status:  ${YELLOW}Disabled${NC}"

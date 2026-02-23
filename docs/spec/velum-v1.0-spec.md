@@ -61,7 +61,7 @@ Multiple layers of protection:
 
 **Provider Agnostic**
 
-Pluggable provider architecture allows supporting multiple VPN services through a standard interface. Currently supported: PIA, Mullvad, IVPN.
+Pluggable provider architecture allows supporting multiple VPN services through a standard interface. Currently supported: Mullvad, IVPN.
 
 ### 1.3 Target Platforms
 
@@ -107,14 +107,8 @@ velum-vpn/
 │   │
 │   └── providers/                    # VPN provider plugins
 │       ├── provider-base.sh          # Standard interface definition
-│       ├── pia.sh                    # Private Internet Access
 │       ├── mullvad.sh                # Mullvad VPN
 │       └── ivpn.sh                   # IVPN
-│
-├── etc/                              # Static assets
-│   └── providers/
-│       └── pia/
-│           └── ca.rsa.4096.crt       # PIA CA certificate
 │
 └── docs/                             # Documentation
     └── spec/
@@ -142,9 +136,9 @@ velum-vpn/
 │    OS LAYER       │   │  PROVIDER LAYER   │   │  WIREGUARD        │
 │                   │   │                   │   │                   │
 │  os/detect.sh     │   │  providers/       │   │  wg-quick         │
-│  os/macos.sh      │   │    pia.sh         │   │  wg (tools)       │
-│  os/linux.sh      │   │    mullvad.sh     │   │  wireguard-go     │
-│                   │   │    ivpn.sh        │   │    (macOS)        │
+│  os/macos.sh      │   │    mullvad.sh     │   │  wg (tools)       │
+│  os/linux.sh      │   │    ivpn.sh        │   │  wireguard-go     │
+│                   │   │                   │   │    (macOS)        │
 │  Functions:       │   │                   │   │                   │
 │  - os_disable_ipv6│   │  Interface:       │   │  Config:          │
 │  - os_set_dns     │   │  - authenticate   │   │  - [Interface]    │
@@ -240,7 +234,7 @@ velum config
 **Description:** Interactive 5-phase configuration wizard for provider selection, authentication, security settings, features, and server selection.
 
 **Phases:**
-1. Provider Selection (PIA, Mullvad, IVPN)
+1. Provider Selection (Mullvad, IVPN)
 2. Authentication (username/password or account number)
 3. Security Profile (kill switch, IPv6, DNS)
 4. Connection Features (Dedicated IP, port forwarding)
@@ -497,7 +491,7 @@ All providers must implement these functions (defined in `lib/providers/provider
 
 **Metadata:**
 ```bash
-provider_name()           # Return provider name (e.g., "PIA", "Mullvad")
+provider_name()           # Return provider name (e.g., "Mullvad", "IVPN")
 provider_version()        # Return adapter version
 ```
 
@@ -539,111 +533,18 @@ provider_get_ca_cert()    # Return CA certificate path
 
 ### 4.2 Feature Support Matrix
 
-| Feature | PIA | Mullvad | IVPN |
-|---------|-----|---------|------|
-| **Auth Type** | username_password | account_number | account_number |
-| **Credential Format** | p####### + password | 16 digits | i-XXXX-XXXX-XXXX |
-| **Token Lifetime** | 24 hours | Long-lived | Subscription-based |
-| **Port Forwarding** | YES | NO | NO |
-| **Dedicated IP** | YES | NO | NO |
-| **Geo Server Filter** | YES | NO | NO |
-| **WireGuard Port** | Dynamic | 51820 | 2049 |
-| **CA Certificate** | Required | Not needed | Not needed |
-| **Server Cache TTL** | 5 min | 5 min | 5 min |
+| Feature | Mullvad | IVPN |
+|---------|---------|------|
+| **Auth Type** | account_number | account_number |
+| **Credential Format** | 16 digits | i-XXXX-XXXX-XXXX |
+| **Token Lifetime** | Long-lived | Subscription-based |
+| **Port Forwarding** | NO | NO |
+| **Dedicated IP** | NO | NO |
+| **WireGuard Port** | 51820 | 2049 |
+| **CA Certificate** | Not needed | Not needed |
+| **Server Cache TTL** | 5 min | 5 min |
 
-### 4.3 PIA (Private Internet Access)
-
-**Authentication API:**
-```
-POST https://www.privateinternetaccess.com/api/client/v2/token
-Content-Type: application/x-www-form-urlencoded
-
-username=p1234567&password=secretpassword
-
-Response:
-{
-  "token": "...",
-  "message_type": "login"
-}
-```
-
-**Server List API:**
-```
-GET https://serverlist.piaservers.net/vpninfo/servers/v6
-
-Response:
-{
-  "regions": [
-    {
-      "id": "de_berlin",
-      "name": "DE Berlin",
-      "country": "DE",
-      "port_forward": true,
-      "geo": false,
-      "servers": {
-        "wg": [
-          {
-            "ip": "158.173.21.201",
-            "cn": "berlin401"
-          }
-        ]
-      }
-    }
-  ]
-}
-```
-
-**WireGuard Key Exchange:**
-```
-GET https://{hostname}:1337/addKey?pt={token}&pubkey={base64_pubkey}
-
-# Uses --connect-to to bypass DNS and connect directly to IP
-# CA certificate required: etc/providers/pia/ca.rsa.4096.crt
-
-Response:
-{
-  "status": "OK",
-  "peer_ip": "10.x.x.x",
-  "server_key": "[base64_44_chars]=",
-  "server_port": 1337,
-  "dns_servers": ["10.0.0.243"]
-}
-```
-
-**Port Forwarding - Get Signature:**
-```
-GET https://{hostname}:19999/getSignature?token={auth_token}
-
-Response:
-{
-  "status": "OK",
-  "payload": "...",
-  "signature": "..."
-}
-```
-
-**Port Forwarding - Bind Port:**
-```
-GET https://{hostname}:19999/bindPort?payload={payload}&signature={signature}
-
-Response:
-{
-  "status": "OK",
-  "port": 12345
-}
-```
-
-**Dedicated IP:**
-```
-POST https://www.privateinternetaccess.com/api/client/v2/dedicated_ip
-
-# Separate token from main account
-# Returns dedicated IP details
-```
-
-**DNS Servers:** 10.0.0.243, 10.0.0.242
-
-### 4.4 Mullvad
+### 4.3 Mullvad
 
 **Authentication API:**
 ```
@@ -698,7 +599,7 @@ Response (error):
 - No dedicated IP feature
 - Uses legacy WireGuard API to avoid device management
 
-### 4.5 IVPN
+### 4.4 IVPN
 
 **Authentication API:**
 ```
@@ -1000,7 +901,6 @@ Both layers active when kill switch enabled.
 ### 6.3 DNS Leak Prevention
 
 **Primary DNS:** Provider's DNS servers (routed through VPN)
-- PIA: 10.0.0.243
 - Mullvad: 10.64.0.1
 - IVPN: 10.0.254.1
 
@@ -1034,7 +934,6 @@ Both layers active when kill switch enabled.
 All API calls enforce:
 - TLS 1.2 minimum (`--tlsv1.2`)
 - CA verification (no `-k` flag)
-- PIA uses custom CA certificate
 
 **Security Check:**
 - `security_check()` validates no insecure flags present
@@ -1131,7 +1030,7 @@ Combines three factors (0-3 points each):
 **Format:** Bash associative array declarations
 ```bash
 # velum-vpn configuration
-CONFIG[provider]="pia"
+CONFIG[provider]="mullvad"
 CONFIG[killswitch]="true"
 CONFIG[killswitch_lan]="detect"
 # ...
@@ -1141,15 +1040,15 @@ CONFIG[killswitch_lan]="detect"
 
 | Key | Values | Description |
 |-----|--------|-------------|
-| provider | pia, mullvad, ivpn | Selected VPN provider |
+| provider | mullvad, ivpn | Selected VPN provider |
 | killswitch | true, false | Enable kill switch |
 | killswitch_lan | block, detect, CIDR | LAN traffic policy |
 | ipv6_disabled | true, false | Disable IPv6 |
 | use_provider_dns | true, false | Use provider's DNS |
-| dip_enabled | true, false | Dedicated IP enabled (PIA) |
-| dip_token | string | DIP token (PIA) |
-| port_forward | true, false | Port forwarding (PIA) |
-| allow_geo | true, false | Allow geo servers (PIA) |
+| dip_enabled | true, false | Dedicated IP enabled (provider-dependent) |
+| dip_token | string | DIP token (provider-dependent) |
+| port_forward | true, false | Port forwarding (provider-dependent) |
+| allow_geo | true, false | Allow geo servers (provider-dependent) |
 | server_auto | true, false | Auto server selection |
 | max_latency | number | Max latency threshold (ms) |
 | selected_region | string | Server region ID |
@@ -1160,7 +1059,6 @@ CONFIG[killswitch_lan]="detect"
 
 | Provider | Token File | Account File |
 |----------|------------|--------------|
-| PIA | tokens/pia_token | - |
 | Mullvad | tokens/mullvad_token | tokens/mullvad_account |
 | IVPN | tokens/ivpn_token | tokens/ivpn_account |
 | WireGuard | tokens/wg_private_key | - |
@@ -1224,7 +1122,6 @@ velum/
 │   ├── security/          # Credential handling, validation
 │   ├── providers/         # Provider implementations
 │   │   ├── provider.go    # Interface definition
-│   │   ├── pia/
 │   │   ├── mullvad/
 │   │   └── ivpn/
 │   ├── platform/          # OS abstraction
@@ -1264,7 +1161,7 @@ velum/
 ### 9.4 Migration Path
 
 1. **Phase 1:** Core library (config, security, types)
-2. **Phase 2:** Provider abstraction + PIA implementation
+2. **Phase 2:** Provider abstraction + Mullvad implementation
 3. **Phase 3:** OS abstraction (macOS first)
 4. **Phase 4:** CLI commands (config, connect, disconnect)
 5. **Phase 5:** Remaining commands + Linux support
@@ -1299,12 +1196,11 @@ velum/
 **Removed:**
 - OpenVPN references (WireGuard only)
 - Phase-based implementation plan (completed)
-- Legacy PIA script references
+- PIA provider support (removed for codebase simplification)
 
 ### 10.3 External References
 
 **Provider Documentation:**
-- PIA: https://www.privateinternetaccess.com/
 - Mullvad: https://mullvad.net/en/help/
 - IVPN: https://www.ivpn.net/knowledgebase/
 

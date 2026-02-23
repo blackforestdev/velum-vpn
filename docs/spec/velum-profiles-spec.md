@@ -239,7 +239,7 @@ Only these array names are permitted:
 |-----|------|-------------|
 | `type` | string | `"standard"` or `"multihop"` |
 | `name` | string | Profile identifier (matches filename without .conf) |
-| `provider` | string | Provider name (`mullvad`, `ivpn`, `pia`) |
+| `provider` | string | Provider name (`mullvad`, `ivpn`) |
 | `created` | string | ISO8601 timestamp |
 
 **PROFILE array (optional):**
@@ -307,7 +307,7 @@ When creating a profile via `velum config`, the default name is generated from t
 - `iv_bucharest_88ms_20260130.conf`
 
 **Generated from:**
-- Provider short code (`CONFIG[provider]` → `mv|iv|pia`)
+- Provider short code (`CONFIG[provider]` → `mv|iv`)
 - Selected location (`CONFIG[selected_name]`)
 - Last measured latency (ms)
 - Current date (UTC)
@@ -323,7 +323,6 @@ Profile name [mullvad_zurich_192ms_20260130]:
 **Provider short codes:**
 - `mv` = Mullvad
 - `iv` = IVPN
-- `pia` = Private Internet Access
 
 ### 5.3 Optional Naming Tokens (Extended Mode)
 

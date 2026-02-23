@@ -54,7 +54,7 @@ os_detect_interface() {
   ip route show default 2>/dev/null | awk '/default/ {print $5; exit}'
 }
 
-# Detect VPN tunnel interface (wg0, wg-pia, etc.)
+# Detect VPN tunnel interface (wg0, velum0, etc.)
 os_detect_vpn_interface() {
   # First try: look for WireGuard interfaces
   local wg_iface

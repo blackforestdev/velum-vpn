@@ -383,7 +383,6 @@ migrate_plaintext_credentials() {
   local account_files=(
     "${tokens_dir}/mullvad_account"
     "${tokens_dir}/ivpn_account"
-    "${tokens_dir}/pia_account"
   )
 
   for file in "${account_files[@]}"; do
@@ -441,7 +440,7 @@ migrate_tokens_to_runtime() {
   local legacy_tokens_dir="${VELUM_TOKENS_DIR:-$HOME/.config/velum/tokens}"
 
   # Look for provider-specific token files
-  for provider in mullvad ivpn pia; do
+  for provider in mullvad ivpn; do
     local legacy_token="${legacy_tokens_dir}/${provider}_token"
 
     if [[ -f "$legacy_token" ]]; then
@@ -465,21 +464,6 @@ migrate_tokens_to_runtime() {
     fi
   done
 
-  # Migrate generic "token" file (used by PIA)
-  local legacy_generic="${legacy_tokens_dir}/token"
-  if [[ -f "$legacy_generic" ]]; then
-    log_info "Migrating generic token to runtime storage..."
-    if check_file_security "$legacy_generic" "warn"; then
-      local token expiry
-      token=$(sed -n '1p' "$legacy_generic" 2>/dev/null)
-      expiry=$(sed -n '2p' "$legacy_generic" 2>/dev/null)
-      if [[ -n "$token" ]]; then
-        credential_store_token "pia" "$token" "$expiry"
-        secure_delete "$legacy_generic"
-        log_info "Generic token migrated to tmpfs"
-      fi
-    fi
-  fi
 }
 
 # Clean up legacy session material from disk storage
@@ -496,7 +480,6 @@ cleanup_legacy_session_files() {
     "${legacy_tokens_dir}/token"
     "${legacy_tokens_dir}/mullvad_token"
     "${legacy_tokens_dir}/ivpn_token"
-    "${legacy_tokens_dir}/pia_token"
   )
 
   for file in "${session_files[@]}"; do
@@ -652,10 +635,6 @@ _credential_prompt_for_provider() {
     ivpn)
       echo "Enter your IVPN account ID (format: i-XXXX-XXXX-XXXX)." >&2
       ask_password "Account ID"
-      ;;
-    pia)
-      echo "Enter your PIA username." >&2
-      ask_password "Username"
       ;;
     *)
       ask_password "Account credential for $provider"

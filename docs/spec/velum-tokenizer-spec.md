@@ -55,7 +55,7 @@ The tokenizer is an independent subsystem responsible for managing authenticatio
 | **Mullvad** | Account number (16 digits) | ~Days | Persistent |
 | **IVPN** | Account ID (i-XXXX-XXXX-XXXX) | ~Days | Persistent |
 
-**Note:** PIA is excluded - scheduled for removal.
+**Note:** Only account-number-based providers are supported.
 
 ### 1.4 Relationship to Other Components
 

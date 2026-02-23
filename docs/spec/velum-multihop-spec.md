@@ -519,7 +519,7 @@ Supported combinations (all permutations):
 | Mullvad | Mullvad | Same provider, different servers |
 | IVPN | IVPN | Same provider, different servers |
 
-PIA support deferred (removal planned).
+Only Mullvad and IVPN are supported for multihop.
 
 ### 4.2 Authentication Handling
 

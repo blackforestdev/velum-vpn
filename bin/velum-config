@@ -159,7 +159,6 @@ phase_provider() {
     providers+=("$p")
     local desc=""
     case "$p" in
-      pia) desc="Private Internet Access - Port forwarding, Dedicated IP" ;;
       mullvad) desc="Mullvad VPN - Privacy-focused, no account info required" ;;
       ivpn) desc="IVPN - Privacy-focused, open source, audited" ;;
       *) desc="VPN Provider" ;;
@@ -188,7 +187,7 @@ phase_provider() {
   if [[ "$choice" =~ ^[0-9]+$ ]] && [[ "$choice" -ge 1 ]] && [[ "$choice" -le "${#providers[@]}" ]]; then
     CONFIG[provider]="${providers[$((choice-1))]}"
   else
-    CONFIG[provider]="pia"  # Default
+    CONFIG[provider]="mullvad"  # Default
   fi
 
   print_ok "Selected: ${CONFIG[provider]^^}"
@@ -265,85 +264,20 @@ phase_authentication() {
     fi
   fi
 
-  # Also check legacy disk location for PIA (backward compat)
-  if [[ -z "${CONFIG[token]}" && "${CONFIG[provider]}" == "pia" ]]; then
-    local legacy_token_file="$VELUM_TOKEN_FILE"
-    if check_token_expiry "$legacy_token_file" 2>/dev/null; then
-      local token
-      token=$(read_token "$legacy_token_file")
-      if [[ -n "$token" ]]; then
-        print_ok "Valid authentication token found (legacy storage)."
-        print_info "Token will be migrated to session storage on next auth."
-        CONFIG[token]="$token"
-
-        if ! ask_yn "Use existing token?" "y"; then
-          CONFIG[token]=""
-        fi
-      fi
-    fi
-  fi
-
   # Need to authenticate?
   if [[ -z "${CONFIG[token]}" ]]; then
-    case "$auth_type" in
-      username_password)
-        _auth_username_password
-        ;;
-      account_number)
-        _auth_account_number
-        ;;
-      *)
-        print_error "Unknown authentication type: $auth_type"
-        exit 1
-        ;;
-    esac
+    if [[ "$auth_type" == "account_number" ]]; then
+      _auth_account_number
+    else
+      print_error "Unknown authentication type: $auth_type"
+      exit 1
+    fi
   fi
 
   echo
 }
 
-# Username/password authentication (PIA style)
-_auth_username_password() {
-  local creds_file
-  creds_file="$(os_get_home)/.${CONFIG[provider]}_credentials"
-
-  # Try to load credentials from file
-  if [[ -f "$creds_file" ]]; then
-    print_info "Found credentials file: $creds_file"
-    CONFIG[username]=$(sed -n '1p' "$creds_file" 2>/dev/null || echo "")
-    CONFIG[password]=$(sed -n '2p' "$creds_file" 2>/dev/null || echo "")
-  fi
-
-  # Prompt for credentials if not loaded
-  if [[ -z "${CONFIG[username]}" ]]; then
-    local prompt="Username"
-    [[ "${CONFIG[provider]}" == "pia" ]] && prompt="PIA username (p#######)"
-    CONFIG[username]=$(ask_input "$prompt")
-  fi
-
-  if [[ -z "${CONFIG[password]}" ]]; then
-    CONFIG[password]=$(ask_password "Password")
-  fi
-
-  # Authenticate
-  local auth_result
-  if auth_result=$(provider_authenticate "${CONFIG[username]}" "${CONFIG[password]}"); then
-    CONFIG[token]=$(echo "$auth_result" | jq -r '.token // .access_token')
-    local expiry
-    expiry=$(echo "$auth_result" | jq -r '.expires_at // .expiry // "unknown"')
-    print_ok "Authentication successful!"
-    [[ "$expiry" != "unknown" && "$expiry" != "null" ]] && echo "Token expires: $expiry"
-  else
-    print_error "Authentication failed. Please check your credentials."
-    exit 1
-  fi
-
-  # Clear credentials from memory - use unset to remove from shell memory
-  # Setting to "" leaves the variable allocated; unset deallocates it
-  unset 'CONFIG[username]' 'CONFIG[password]'
-}
-
-# Account number authentication (Mullvad style)
+# Account number authentication (Mullvad/IVPN style)
 _auth_account_number() {
   local provider="${CONFIG[provider]}"
   local max_attempts=3
@@ -595,16 +529,9 @@ _extract_server_data() {
       host_provider="unknown"
       owned="unknown"
       ;;
-    *)  # PIA
-      id=$(echo "$server" | jq -r '.id')
-      name=$(echo "$server" | jq -r '.name')
-      ip=$(echo "$server" | jq -r '.servers.wg[0].ip // empty')
-      hostname=$(echo "$server" | jq -r '.servers.wg[0].cn // empty')
-      # PIA names are like "US New York" - extract country code prefix
-      country_code="${name%% *}"
-      # PIA doesn't expose provider/owned - mark as unknown
-      host_provider="unknown"
-      owned="unknown"
+    *)
+      # Unknown provider - return empty
+      return 1
       ;;
   esac
 
@@ -860,18 +787,6 @@ phase_server() {
     CONFIG[selected_region]="dip"
     print_info "Using Dedicated IP server: ${CONFIG[selected_ip]}"
     return
-  fi
-
-  # Geo servers (PIA-specific feature)
-  if [[ "${CONFIG[provider]}" == "pia" ]]; then
-    echo "Geo-located servers appear to be in a different country than"
-    echo "their actual physical location (for censorship bypass)."
-    if ask_yn "Allow geo-located servers?" "n"; then
-      CONFIG[allow_geo]="true"
-    else
-      CONFIG[allow_geo]="false"
-    fi
-    echo
   fi
 
   # Server priority selection (manual only - no auto mode per SEC-001)
@@ -1581,9 +1496,6 @@ main() {
   echo "${C_BOLD}velum-vpn Configuration${C_RESET}"
   echo "========================"
   echo
-
-  # Migrate from legacy location if needed
-  migrate_legacy_config
 
   # Check for and offer to clean up plaintext credentials (security)
   migrate_plaintext_credentials

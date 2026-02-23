@@ -220,68 +220,6 @@ init_config_dirs() {
   ensure_config_dir "$VELUM_CACHE_DIR" 700
 }
 
-# Legacy config path (for migration)
-VELUM_LEGACY_CONFIG_DIR="/opt/piavpn-manual"
-
-# Migrate from legacy location to XDG config
-# Usage: migrate_legacy_config
-migrate_legacy_config() {
-  local legacy_dir="$VELUM_LEGACY_CONFIG_DIR"
-  local migrated=false
-
-  # Skip if no legacy directory
-  [[ ! -d "$legacy_dir" ]] && return 0
-
-  # Initialize new config directories
-  init_config_dirs
-
-  # Migrate velum.conf
-  if [[ -f "$legacy_dir/velum.conf" && ! -f "$VELUM_CONFIG_FILE" ]]; then
-    log_info "Migrating config from $legacy_dir/velum.conf..."
-    cp "$legacy_dir/velum.conf" "$VELUM_CONFIG_FILE"
-    chmod 600 "$VELUM_CONFIG_FILE"
-    migrated=true
-  fi
-
-  # Migrate token
-  if [[ -f "$legacy_dir/token" && ! -f "$VELUM_TOKENS_DIR/token" ]]; then
-    log_info "Migrating token..."
-    cp "$legacy_dir/token" "$VELUM_TOKENS_DIR/token"
-    chmod 600 "$VELUM_TOKENS_DIR/token"
-    migrated=true
-  fi
-
-  # Migrate Mullvad token (account files are NOT migrated for security)
-  if [[ -f "$legacy_dir/mullvad_token" && ! -f "$VELUM_TOKENS_DIR/mullvad_token" ]]; then
-    log_info "Migrating Mullvad token..."
-    cp "$legacy_dir/mullvad_token" "$VELUM_TOKENS_DIR/mullvad_token"
-    chmod 600 "$VELUM_TOKENS_DIR/mullvad_token"
-    migrated=true
-  fi
-
-  # SECURITY: Do NOT migrate plaintext account files
-  # Plaintext account storage has been removed for security
-  if [[ -f "$legacy_dir/mullvad_account" ]]; then
-    log_warn "Legacy plaintext credential found: $legacy_dir/mullvad_account"
-    log_warn "This file should be securely deleted. Run 'velum credential migrate' for secure cleanup."
-  fi
-
-  # Fix ownership if running as root via sudo
-  if [[ "$migrated" == "true" && -n "${SUDO_USER:-}" ]] && _validate_username "$SUDO_USER"; then
-    local sudo_uid sudo_gid
-    sudo_uid=$(id -u "$SUDO_USER" 2>/dev/null)
-    sudo_gid=$(id -g "$SUDO_USER" 2>/dev/null)
-    if [[ -n "$sudo_uid" && -n "$sudo_gid" ]]; then
-      chown -R "$sudo_uid:$sudo_gid" "$VELUM_CONFIG_DIR"
-    fi
-  fi
-
-  if [[ "$migrated" == "true" ]]; then
-    print_ok "Configuration migrated to $VELUM_CONFIG_DIR"
-    print_info "Legacy files in $legacy_dir can be removed."
-  fi
-}
-
 # ============================================================================
 # COLOR DEFINITIONS
 # ============================================================================

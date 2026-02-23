@@ -23,7 +23,7 @@ _load_credential_lib() {
 # Curl wrapper that enforces TLS 1.2+ and uses provider CA cert
 # Usage: secure_curl [curl options] URL
 secure_curl() {
-  local provider="${VELUM_PROVIDER:-pia}"
+  local provider="${VELUM_PROVIDER:-mullvad}"
   local ca_cert="${VELUM_ROOT}/etc/providers/${provider}/ca.rsa.4096.crt"
 
   # Build base curl command with security flags
@@ -86,14 +86,6 @@ validate_wg_key() {
   local key="$1"
 
   [[ "$key" =~ ^[A-Za-z0-9+/]{43}=$ ]]
-}
-
-# Validate PIA username format (p####### - starts with p, 7 digits)
-# Usage: validate_pia_username "p1234567" && echo "valid"
-validate_pia_username() {
-  local username="$1"
-
-  [[ "$username" =~ ^p[0-9]{7}$ ]]
 }
 
 # Validate DNS server (IPv4 address)
@@ -520,7 +512,7 @@ cleanup_credentials() {
   _sensitive_vars=()
 
   # Always clean these common ones
-  unset PIA_USER PIA_PASS privKey wireguard_json
+  unset privKey wireguard_json
 }
 
 # Register cleanup on exit
